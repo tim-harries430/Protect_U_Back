@@ -279,10 +279,19 @@ def _piece_signals(piece: XrayPiece) -> tuple[DisguiseSignal, ...]:
         )
 
     if _piece_blindspot(piece, details):
+        if piece.kind == "registered_action" and details.get("effect_modellable") is False:
+            blindspot_detail = (
+                "observation blindspot: turing-complete payload, effect not "
+                "modellable from command surface (Rice)"
+            )
+        else:
+            blindspot_detail = (
+                "observation blindspot: content or existence could not be sealed"
+            )
         matched[DisguiseAxis.OBSERVATION_BLINDSPOT] = _signal(
             DisguiseAxis.OBSERVATION_BLINDSPOT,
             piece,
-            "observation blindspot: content or existence could not be sealed",
+            blindspot_detail,
             _blindspot_evidence(piece, details),
         )
 
@@ -333,6 +342,11 @@ def _piece_blindspot(piece: XrayPiece, details: Mapping[str, Any]) -> bool:
         return True
     if hash_unavailable(details):
         return True
+    # A registered action whose payload is a Turing-complete interpreter
+    # invocation: bytes are hashable, effect is not. Undecidable from surface,
+    # so it is a blindspot -- the box is sealed even though we can hash it.
+    if piece.kind == "registered_action" and details.get("effect_modellable") is False:
+        return True
     return False
 
 
@@ -351,6 +365,11 @@ def _blindspot_evidence(
         evidence.append("sha256:None")
     if hash_unavailable(details):
         evidence.append(f"hash_status:{details.get('hash_status')}")
+    if piece.kind == "registered_action" and details.get("effect_modellable") is False:
+        evidence.append("effect_modellable:False")
+        marker = details.get("opaque_executor")
+        if marker:
+            evidence.append(f"opaque_executor:{marker}")
     return tuple(sorted(evidence))
 
 

@@ -13,6 +13,7 @@ from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Mapping, Sequence
 
 from ot_gate import CommandProposal, SideEffect
+from opaque_executor import opaque_marker
 from safe_path import safe_resolve
 
 
@@ -481,6 +482,19 @@ def _proposal_piece(proposal: CommandProposal) -> XrayPiece:
         "command_length": len(proposal.command_text),
         "raw_payload_sha256": _sha256_canonical(proposal.raw_payload),
     }
+    # Decidable, surface-only blindspot: a shell command that invokes an inline-
+    # code interpreter (python -c, sh -c, eval, ...) carries a Turing-complete
+    # payload whose effects are undecidable from the command text (Rice). We
+    # cannot model what it does; we mark THAT we cannot, so downstream reports
+    # UNKNOWN instead of a false CLEAR. Only real shell execution qualifies --
+    # never Write/Edit (whose content is data, not an executed argv).
+    if str(proposal.tool_name or "").strip().lower() == "bash" or str(
+        proposal.action_type or ""
+    ).strip().lower() in {"bash", "shell"}:
+        marker = opaque_marker(proposal.command_text)
+        if marker is not None:
+            payload["effect_modellable"] = False
+            payload["opaque_executor"] = marker
     return XrayPiece(
         kind="registered_action",
         ref=proposal.proposal_id,
@@ -1045,6 +1059,8 @@ def _piece_tags(piece: XrayPiece) -> tuple[str, ...]:
             SideEffect.AUDIT_CHANGE.value,
         } & set(effects):
             tags.append("high_pressure_effect")
+        if piece.details.get("effect_modellable") is False:
+            tags.append("opaque_executor")
         return tuple(tags)
 
     if piece.kind == "target_path":
