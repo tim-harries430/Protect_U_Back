@@ -94,6 +94,10 @@ class CapabilityManifest:
     allowed_network_domains: Sequence[str] = field(default_factory=tuple)
     skill_contracts: Sequence[SkillContract] = field(default_factory=tuple)
     allow_protected_targets: bool = False
+    # Opt-in (default off): treat a single-file, non-recursive, in-boundary
+    # delete as a recoverable side effect instead of an outright rejected one.
+    # Recursive/external/protected deletes are unaffected and still KILL.
+    allow_reversible_delete: bool = False
 
     def __post_init__(self):
         if not self.actor_id.strip():
@@ -326,6 +330,7 @@ def default_agent_capability_manifest(
         allowed_path_roots=tuple(project_roots),
         allowed_network_domains=(),
         allow_protected_targets=False,
+        allow_reversible_delete=(actor_id == "claude_code"),
     )
 
 
@@ -342,6 +347,26 @@ def default_capability_policy(
             if actor_id.strip() and not actor_id.startswith("user")
         ),
     )
+
+
+# Recursive / bulk delete markers. A delete carrying any of these is NOT a
+# single recoverable file removal and must keep the existing KILL path.
+RECURSIVE_DELETE_TOKENS = (
+    " -r", " -rf", " -fr", "-recurse", "--recursive", "rmdir", " rd ", "/s", "*", "?",
+)
+
+
+def _is_reversible_delete(proposal: CommandProposal) -> bool:
+    """
+    True only for a single-file, non-recursive delete. Boundary and protected
+    checks are left to _audit_targets (which already KILLs external and .phi
+    deletes); this only separates a recoverable one-file removal from a
+    recursive/bulk wipe. Git-tracked vs untracked is NOT yet distinguished.
+    """
+    if not proposal.target_paths:
+        return False
+    text = _normalized_command(proposal.command_text)
+    return not _contains_any(text, RECURSIVE_DELETE_TOKENS)
 
 
 def audit_capability(
@@ -426,6 +451,14 @@ def audit_capability(
             rejected_side_effects=rejected_effects,
             evidence=(audit_effect.value,),
         )
+
+    if (
+        manifest.allow_reversible_delete
+        and rejected_effects == (SideEffect.DELETE,)
+        and _is_reversible_delete(proposal)
+    ):
+        matched_effects = matched_effects + (SideEffect.DELETE,)
+        rejected_effects = ()
 
     if rejected_effects:
         return _decision(

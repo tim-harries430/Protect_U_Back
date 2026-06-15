@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -57,7 +58,10 @@ _BENIGN_REDIRECT_SINKS = (
 _BENIGN_SINK_REDIRECT_RE = re.compile(
     r"(?:&|[0-9]+)?[<>]{1,2}&?\s*/dev/(?:" + "|".join(_BENIGN_REDIRECT_SINKS) + r")\b"
 )
+_FD_REDIRECT_RE = re.compile(r"(?:^|\s)(?:[0-9]+)?[<>]{1,2}&[0-9]+\b")
+_HEREDOC_MARKER_RE = re.compile(r"<<-?\s*(['\"]?)[A-Za-z_][A-Za-z0-9_]*\1")
 _PROCESS_SUBSTITUTION_RE = re.compile(r"[<>]\(([^()]*)\)")
+_COMMAND_SEGMENT_RE = re.compile(r"\s*(?:\|\||&&|\|)\s*|\n+")
 
 
 def _is_phantom_target(target: str) -> bool:
@@ -78,26 +82,187 @@ def _codex_shell_targets_and_effects(
     phantom filesystem targets. The inner command of each process substitution
     is analysed separately so its real effects (e.g. network) are not lost.
     """
-    inner_commands = _PROCESS_SUBSTITUTION_RE.findall(command_text)
+    audit_text = _codex_audit_command_text(command_text)
+    targets: list[str] = []
+    effects: set[SideEffect] = set()
+
+    for segment in _command_segments(audit_text):
+        segment_targets, segment_effects = _bash_targets_and_effects(segment)
+        extra_targets, extra_effects = _codex_segment_targets_and_effects(segment)
+        targets.extend(segment_targets)
+        targets.extend(extra_targets)
+        effects |= segment_effects
+        effects |= extra_effects
+
+    if not effects:
+        effects.add(SideEffect.READ)
+
+    targets = _drop_sed_scripts(targets, audit_text)
+
+    return tuple(
+        dict.fromkeys(target for target in targets if not _is_phantom_target(target))
+    ), effects
+
+
+def _codex_audit_command_text(command_text: str) -> str:
+    inner_commands = tuple(
+        inner.strip()
+        for inner in _PROCESS_SUBSTITUTION_RE.findall(command_text)
+        if inner.strip()
+    )
     cleaned = _PROCESS_SUBSTITUTION_RE.sub(" ", command_text)
     cleaned = _BENIGN_SINK_REDIRECT_RE.sub(" ", cleaned)
+    cleaned = _FD_REDIRECT_RE.sub(" ", cleaned)
+    cleaned = _HEREDOC_MARKER_RE.sub(" ", cleaned)
+    pieces = tuple(piece for piece in (cleaned.strip(), *inner_commands) if piece)
+    return "\n".join(pieces) or command_text
 
-    targets, effects = _bash_targets_and_effects(cleaned)
-    targets = list(targets)
-    effects = set(effects)
 
-    for inner in inner_commands:
-        inner = inner.strip()
-        if not inner:
-            continue
-        inner_targets, inner_effects = _bash_targets_and_effects(inner)
-        targets.extend(inner_targets)
-        effects |= inner_effects
-
-    deduped = tuple(
-        dict.fromkeys(target for target in targets if not _is_phantom_target(target))
+def _command_segments(command_text: str) -> tuple[str, ...]:
+    return tuple(
+        segment.strip()
+        for segment in _COMMAND_SEGMENT_RE.split(command_text)
+        if segment.strip()
     )
-    return deduped, effects
+
+
+def _codex_segment_targets_and_effects(
+    segment: str,
+) -> tuple[tuple[str, ...], set[SideEffect]]:
+    try:
+        tokens = shlex.split(segment, posix=True)
+    except ValueError:
+        tokens = segment.split()
+    if not tokens:
+        return (), {SideEffect.READ}
+
+    verb = Path(tokens[0]).name.lower()
+    args = tuple(token for token in tokens[1:] if not token.startswith("-"))
+    targets: list[str] = []
+    effects: set[SideEffect] = {SideEffect.READ}
+
+    if verb in {"rg", "grep"}:
+        targets.extend(_reader_targets_after_pattern(args))
+    elif verb in {"ls", "find", "fd"}:
+        targets.extend(_codex_read_target_args(args))
+    elif verb == "sed" and _sed_edits_in_place(tokens):
+        effects.add(SideEffect.WRITE)
+        targets.extend(_reader_targets_after_pattern(args))
+    elif verb == "perl" and _perl_edits_in_place(tokens):
+        effects.add(SideEffect.WRITE)
+        targets.extend(_perl_edit_targets(tokens))
+    elif verb.startswith("python") and _python_write_surface(segment):
+        effects.add(SideEffect.WRITE)
+    elif verb == "apply_patch":
+        patch_targets, patch_effects = _patch_targets_and_effects(segment)
+        targets.extend(patch_targets)
+        effects |= patch_effects
+    elif verb in {"rm", "rmdir", "unlink"}:
+        effects.add(SideEffect.DELETE)
+        targets.extend(_codex_path_like_args(args))
+
+    return tuple(dict.fromkeys(targets)), effects
+
+
+def _reader_targets_after_pattern(args: Sequence[str]) -> tuple[str, ...]:
+    if len(args) <= 1:
+        return ()
+    return _codex_read_target_args(args[1:])
+
+
+def _codex_read_target_args(args: Sequence[str]) -> list[str]:
+    return [
+        arg
+        for arg in args
+        if _codex_looks_like_path(arg) and arg.strip().strip("'\"") not in {".", ".."}
+    ]
+
+
+def _codex_path_like_args(args: Sequence[str]) -> list[str]:
+    return [arg for arg in args if _codex_looks_like_path(arg)]
+
+
+def _codex_looks_like_path(value: str) -> bool:
+    text = value.strip().strip("'\"")
+    if text in {".", ".."}:
+        return True
+    if text.startswith(("./", "../", "/", "~")):
+        return True
+    if text.startswith(".") and len(text) > 1:
+        return True
+    if "/" in text or "\\" in text:
+        return True
+    return bool(re.search(r"\.[A-Za-z0-9_]{1,16}$", text))
+
+
+def _sed_edits_in_place(tokens: Sequence[str]) -> bool:
+    return any(token == "-i" or token.startswith("-i") for token in tokens[1:])
+
+
+def _perl_edits_in_place(tokens: Sequence[str]) -> bool:
+    return any("i" in token and token.startswith("-") for token in tokens[1:])
+
+
+def _perl_edit_targets(tokens: Sequence[str]) -> tuple[str, ...]:
+    targets: list[str] = []
+    skip_next = False
+    for token in tokens[1:]:
+        if skip_next:
+            skip_next = False
+            continue
+        if token in {"-e", "-E"}:
+            skip_next = True
+            continue
+        if token.startswith("-"):
+            continue
+        if _codex_looks_like_path(token):
+            targets.append(token)
+    return tuple(dict.fromkeys(targets))
+
+
+def _python_write_surface(segment: str) -> bool:
+    lowered = segment.lower()
+    if ".write_text(" in lowered or ".write_bytes(" in lowered:
+        return True
+    return bool(re.search(r"\bopen\s*\([^)]*,\s*['\"][wa+]", lowered))
+
+
+def _patch_targets_and_effects(segment: str) -> tuple[tuple[str, ...], set[SideEffect]]:
+    targets: list[str] = []
+    effects: set[SideEffect] = {SideEffect.READ}
+    for line in segment.splitlines():
+        match = re.match(r"\*\*\* (?:Add|Update) File:\s+(.+)$", line.strip())
+        if match:
+            targets.append(match.group(1).strip())
+            effects.add(SideEffect.WRITE)
+            continue
+        match = re.match(r"\*\*\* Delete File:\s+(.+)$", line.strip())
+        if match:
+            targets.append(match.group(1).strip())
+            effects.add(SideEffect.DELETE)
+    return tuple(dict.fromkeys(targets)), effects
+
+
+def _drop_sed_scripts(targets: Sequence[str], command_text: str) -> list[str]:
+    scripts = _sed_script_tokens(command_text)
+    if not scripts:
+        return list(targets)
+    return [target for target in targets if str(target) not in scripts]
+
+
+def _sed_script_tokens(command_text: str) -> set[str]:
+    scripts: set[str] = set()
+    for segment in _command_segments(command_text):
+        try:
+            tokens = shlex.split(segment, posix=True)
+        except ValueError:
+            tokens = segment.split()
+        if not tokens or Path(tokens[0]).name.lower() != "sed":
+            continue
+        args = tuple(token for token in tokens[1:] if not token.startswith("-"))
+        if args:
+            scripts.add(args[0])
+    return scripts
 
 
 @dataclass(frozen=True)
@@ -117,7 +282,8 @@ class CodexGuardDecision:
             "source_adapter": SOURCE_ADAPTER,
             "action_id": self.action.action_id,
             "actor_id": self.action.actor_id,
-            "command_text": self.action.command_text,
+            "command_text": _display_command_text(self.action),
+            "audit_command_text": self.action.command_text,
             "cwd": self.action.cwd,
             "target_paths": tuple(self.action.target_paths),
             "expected_side_effects": tuple(
@@ -140,8 +306,9 @@ def action_from_shell_argv(
     environ: Mapping[str, str] | None = None,
 ) -> ActionEnvelope:
     env = environ or os.environ
-    command_text = _command_text_from_shell_argv(argv)
-    target_paths, effects = _codex_shell_targets_and_effects(command_text)
+    original_command_text = _command_text_from_shell_argv(argv)
+    command_text = _codex_audit_command_text(original_command_text)
+    target_paths, effects = _codex_shell_targets_and_effects(original_command_text)
     action_type = infer_action_type(
         "shell",
         tool_name="shell",
@@ -167,6 +334,8 @@ def action_from_shell_argv(
         "codex_guard": {
             "schema_version": "pub_codex_shell_guard:v0",
             "shell_argv": tuple(str(item) for item in argv),
+            "original_command_text": original_command_text,
+            "audit_command_text": command_text,
             "cwd": cwd,
             "sandbox": _sandbox_evidence_from_env(env),
             "approval": _approval_evidence_from_env(env),
@@ -269,6 +438,15 @@ def _command_text_from_shell_argv(argv: Sequence[str]) -> str:
     if len(args) >= 3 and args[0] == "-l" and args[1] == "-c":
         return args[2]
     return " ".join(args)
+
+
+def _display_command_text(action: ActionEnvelope) -> str:
+    codex_guard = action.raw_payload.get("codex_guard")
+    if isinstance(codex_guard, Mapping):
+        original = str(codex_guard.get("original_command_text", "")).strip()
+        if original:
+            return original
+    return action.command_text
 
 
 def _project_root_for_action(action: ActionEnvelope, env: Mapping[str, str]) -> str:

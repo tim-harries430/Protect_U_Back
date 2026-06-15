@@ -168,7 +168,7 @@ def run_pretool_admission(
         },
     )
 
-    _append_log(
+    witness = _append_log(
         env,
         {
             "phase": "pretool_admission",
@@ -190,6 +190,16 @@ def run_pretool_admission(
             "state_path": str(state_path),
         },
     )
+    # Fail-closed witness (PUB-OS): inside a cc cage the ONLY audit egress is the
+    # out-of-cage ledger. If the witness is lost, an unrecorded action must not
+    # proceed silently -- escalate to HOLD (ask). This only fires when a ledger
+    # socket is configured (witness == "unavailable" requires PUB_OS_LEDGER_SOCKET),
+    # so the default uncaged path is untouched. It tightens only (never downgrades
+    # a deny) and defers to the operator's gate switch (no override when gate off).
+    if not gate_off and witness == "unavailable":
+        _witness_hold = _pretool_hold_output("PUB_OS_LEDGER_WITNESS_LOST")
+        if _decision_rank(_witness_hold) > _decision_rank(output):
+            output = _witness_hold
     return ClaudeHookAdmission(
         event=event,
         action=action,
@@ -1075,10 +1085,44 @@ def _autopsy_path(cid: str, env: Mapping[str, str]) -> Path:
     return root / f"pub_claude_posttool_autopsy_{safe}.json"
 
 
-def _append_log(env: Mapping[str, str], row: Mapping[str, Any]) -> None:
+def _append_log(env: Mapping[str, str], row: Mapping[str, Any]) -> str:
     payload = {"ts": time.time(), "hook_id": HOOK_ID, **dict(row)}
     with _log_path(env).open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(_jsonable(payload), ensure_ascii=False, sort_keys=True) + "\n")
+    return _mirror_to_ledger(env, payload)
+
+
+def _mirror_to_ledger(env: Mapping[str, str], payload: Mapping[str, Any]) -> str:
+    """Out-of-cage ledger mirror (PUB-OS Task 3). Returns a witness status.
+
+    No-op (``"not_configured"``) unless ``PUB_OS_LEDGER_SOCKET`` is set, i.e.
+    running inside a cc cage whose only audit egress is the ledger socket. When
+    set, the same row just written locally is delivered to the out-of-cage
+    ``LedgerSupervisor`` that owns the tamper-proof, hash-chained ledger.
+
+    This function never raises -- a transport failure must not crash the gate.
+    It only REPORTS the outcome; ``run_pretool_admission`` is what acts on a lost
+    witness (fail closed -> HOLD). Statuses:
+      not_configured  no ledger socket -> default uncaged behaviour, no mirror
+      recorded        supervisor acknowledged the row
+      unavailable     supervisor unreachable / no ack  (witness lost)
+      rejected        supervisor refused the row (payload/authority field)
+      error           any other mirror failure
+    """
+    socket_path = env.get("PUB_OS_LEDGER_SOCKET")
+    if not socket_path:
+        return "not_configured"
+    try:
+        from pub_os_ledger import LedgerEventRejected, LedgerUnavailable, emit_event
+
+        emit_event(socket_path, _jsonable(dict(payload)))
+        return "recorded"
+    except LedgerUnavailable:
+        return "unavailable"
+    except LedgerEventRejected:
+        return "rejected"
+    except Exception:  # noqa: BLE001 - the audit mirror must never break the gate
+        return "error"
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
