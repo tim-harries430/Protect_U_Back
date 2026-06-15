@@ -87,6 +87,7 @@
     "project/kimi_connector.py",
     "project/kimi_runtime_guard.py",
     "project/llm_channel.py",
+    "project/opaque_executor.py",
     "project/openclaw_connector.py",
     "project/openclaw_runtime_guard.py",
     "project/openharness_connector.py",
