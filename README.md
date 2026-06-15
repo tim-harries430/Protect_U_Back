@@ -1,10 +1,12 @@
 # Protect U Back
 
-Protect U Back (PUB) is a local pre-tool audit kernel for AI agents.
+Protect U Back (PUB) is a local pre-I/O audit kernel and PUB-OS supervisor for AI agents.
 
 It is built from one simple rule: an agent action should leave evidence before it is allowed to touch the world.
 
-PUB is not a prompt filter. It does not try to decide whether language sounds safe. It audits proposed tool use, filesystem movement, and the physical state around an action.
+PUB is not a prompt filter. It does not try to decide whether language sounds safe. It audits proposed tool use, filesystem movement, process surfaces, and the physical state around an action.
+
+PUB-OS is an agent operating boundary, not a host operating system. It does not claim to replace Windows, Linux, an endpoint security product, or a kernel sandbox. Its job is narrower: connected agents enter through PUB-controlled entrypoints, and their declared tool or shell movement is observed before it reaches real side effects.
 
 ```text
 Channel -> Envelope -> X-ray -> Admission -> Tool -> Autopsy -> OT
@@ -23,7 +25,7 @@ If a protected file or process surface moved, changed, vanished, appeared, or be
 PUB must produce evidence and stop silent passage.
 ```
 
-## The v0.18 Local Baseline
+## The v1.0 Local Baseline
 
 v0.14 froze the first complete architecture slice:
 
@@ -39,8 +41,7 @@ v0.14 froze the first complete architecture slice:
 - Claude Code hook connector: `PreToolUse` and `PostToolUse`
 - local release packaging for offline review
 
-v0.18 keeps that boundary and adds the missing connection and Windows
-observation work:
+v1.0 keeps that boundary and adds the missing connection, agent-supervision, and Windows observation work:
 
 - Claude Code hooks now match all tools with `*`, not only a small Bash/Edit
   set
@@ -53,9 +54,13 @@ observation work:
 - NTFS alternate data streams are separated by metadata-vector evidence instead
   of collapsing onto the host `file_id`
 - `temporal_continuity.py` adds a sequence-memory layer for read-then-egress and
-  read-then-opaque-exec patterns **across separate, observed tool calls**. A
-  single opaque subprocess that performs both the read and the egress internally
-  is not caught — see "Current Limits"
+  read-then-opaque-exec patterns **across separate, observed tool calls**
+- PUB-OS introduces supervised agent entry instead of trusting an already-running
+  desktop session
+- Claude Code (`cc`) is covered through all-tool hooks, fail-closed ledger
+  witness, and explicit review for unmodelled tools
+- Codex CLI (`cd`) is covered through a PUB shell guard entrypoint that records
+  shell pre/post evidence and blocks dangerous side effects before execution
 
 The important boundary is unchanged:
 
@@ -129,12 +134,13 @@ If yes, it must leave a receipt.
 
 ## Current Verification
 
-Current v0.18 local checks include:
+Current v1.0 local checks include:
 
 ```text
-Release / connector / hook / temporal / Windows checks: 46 passed
-Temporal continuity + Windows hardcore checks:          17 passed
-Windows reparse / ADS evidence cases:                   4 / 4 intercepted
+PUB-OS / Codex / connector regression:                 93 passed, 1 xfailed
+Packaged PUB-OS release tests:                           83 passed
+Windows reparse / ADS evidence cases:                    4 / 4 intercepted
+Codex CLI guard probe: read PASS, write PASS, opaque HOLD, delete KILL
 ```
 
 The light regression covers:
@@ -168,7 +174,7 @@ environment blocked    -> replay/host capability issue
 From a local release package:
 
 ```powershell
-cd ProtectUBack_early_access_0.18_local
+cd ProtectUBack_early_access_1.0_local
 python project\protect_launcher.py audit test\sandbox_gateway_cases.json
 ```
 
@@ -199,7 +205,7 @@ The hook layer blocks before Claude's own permission ask when PUB has enough rea
 
 The connector is local and reversible. It modifies Claude Code project hook settings; it does not require a cloud service.
 
-In v0.18 the connector uses `matcher: "*"` so every Claude Code tool enters the
+In v1.0 the connector uses `matcher: "*"` so every Claude Code tool enters the
 hook. Tools PUB can model are audited directly. Tools it cannot model are held
 for explicit review with `UNKNOWN_CAPABILITY` rather than being silently allowed.
 
@@ -207,9 +213,17 @@ for explicit review with `UNKNOWN_CAPABILITY` rather than being silently allowed
 blocking/escalation, but the hook still records the audit trail. It is not a
 permission grant and should not be treated as a clean verdict.
 
+## Codex CLI Guard
+
+PUB can connect to Codex CLI through a local shell guard launcher. The launcher starts Codex inside a shell overlay where `/bin/bash` and `/bin/sh` route through `codex_bash_guard.py` before real shell execution.
+
+The guard is not a Codex binary patch and does not grant permission. It records pre/post shell evidence, keeps `can_execute=false` and `can_grant_permission=false`, allows ordinary local read/code-work commands, holds opaque writer surfaces when targets are unclear, and kills destructive side effects such as `rm -rf` before execution.
+
+An already-running Codex Desktop session is outside this boundary. It must be treated as unsupervised unless it entered through a PUB-controlled connector.
+
 ## Windows Evidence
 
-v0.18 adds a focused Windows evidence report:
+v1.0 keeps the focused Windows evidence report:
 
 ```text
 evidence/windows_reparse_ads_report.md
@@ -247,44 +261,31 @@ PUB is not:
 
 - an antivirus engine
 - an endpoint security replacement
-- an OS sandbox
+- a host OS replacement or kernel sandbox
 - a cloud service
 - a prompt moderation layer
 - a final judge with sole execution authority
 
-PUB is a local evidence gate. It should make unsafe or unclear tool movement visible before it reaches the real world.
+PUB is a local evidence gate and agent supervision boundary. It should make unsafe or unclear tool movement visible before it reaches the real world.
 
 ## Current Limits
 
-v0.18 is still an early-access local release. It improves the audit shell and
-Windows observation layer before solving every forensic label.
+v1.0 is the first PUB-OS local release. It improves the audit shell, Windows observation layer, and connected-agent interception surface before solving every forensic label.
 
 Known next work:
 
 - fuller `P_auth` authorization delta
-- direct runtime integration for temporal continuity where required
+- kernel-level runtime sensors where required (minifilter/WFP on Windows, eBPF on Linux)
 - better hardlink / junction / ADS mechanism labels
 - stronger mtime/ctime replay semantics
 - multi-auditor voting and separated verdict panels
 - cleaner public evidence docs
 
-Known limitation (red-team, reproducible):
+Current boundary (red-team, reproducible):
 
-PUB infers an action's effects from the tool-call surface — the command text and
-its declared targets. An opaque subprocess such as `python script.py` is a black
-box to that surface: it parses to "read-only, no targets", so a secret read plus
-a network egress performed *inside one subprocess* passes every layer (spatial
-gate, X-ray review, X-ray transition snapshot, and the temporal sequence judge).
-The snapshot layers are blind here by construction — a read copies bytes without
-mutating any file, leaving no state delta to observe, and PUB does not watch the
-network. Spelling the same action out in the command (e.g. `curl ... "$(cat
-.env)"`) is correctly killed.
+PUB-OS now covers the connected agent entrypoints it owns. Claude Code enters through all-tool hooks. Codex CLI enters through the PUB shell guard. In that connected mode, ordinary local code reading is not killed just because it uses `2>/dev/null`, project-local shell writes are visible, opaque writer surfaces are held when targets cannot be proved, and destructive shell side effects such as `rm -rf` are killed before execution.
 
-This is the advisory-vs-mandatory boundary: PUB is a cooperative, user-space
-reference monitor over declared tool calls. Catching effects hidden inside an
-opaque child process requires mandatory interposition at the syscall boundary
-(minifilter/WFP on Windows, eBPF on Linux) feeding the same gate — tracked above
-as "direct runtime integration".
+The remaining limit is host-wide mandatory interposition. PUB-OS does not retroactively attach to an already-running desktop agent, and it is not yet a kernel syscall monitor for every child process on the PC. Effects hidden inside an opaque child process remain admissible only when they are visible through the supervised tool or shell surface; otherwise they must HOLD or be caught later by a future minifilter/WFP/eBPF style sensor feeding the same PUB gate. Downloaded or externally produced files are still suspect inputs and must be re-admitted before trust.
 
 These are not reasons to weaken the boundary.
 
@@ -471,9 +472,9 @@ runs/blast-p2-github/     phase 2 vs GitHub     -> real 401 (the headline)
 
 ## One-Sentence Summary
 
-Protect U Back is a local pre-commit audit gate for AI agents: it passes safe
-proposals, holds ambiguous proposals, and kills dangerous side effects with an
-autopsy trail before tools execute.
+Protect U Back is a local pre-I/O audit gate and PUB-OS supervisor for AI
+agents: it passes safe proposals, holds ambiguous proposals, and kills dangerous
+side effects with an autopsy trail before tools execute.
 
 ## Personal Preference
 
