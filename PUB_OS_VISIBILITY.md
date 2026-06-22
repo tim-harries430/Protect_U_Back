@@ -85,7 +85,8 @@ X-ray, or OT.
   - `check_claude_code_profile()`: confirms `cc` has all-tool hooks and
     the gate switch is armed.
   - `check_agent_runtime()`: admits only the active `cd` or `cc` runtime that
-    has entered through its PUB boundary.
+    has entered through its PUB boundary and carries the runner-attached
+    witness.
   - `check_kingdom_supervision()`: compatibility wrapper for active-profile
     runtime admission.
 - `project/pub_os_runner.py`
@@ -142,6 +143,13 @@ PUB-OS v1 is scoped to the agent session that enters the kingdom. `cd` and `cc`
 are supported profiles, but they are not a global product matrix and they are
 not required to be present at the same time.
 
+Connector/profile readiness is not a runtime supervision claim. A `cd` or `cc`
+process that bypasses `pub_os_runner.py` is treated as unmanaged even when its
+profile receipt is armed; PUB must not promise that such a process is
+connected. Runtime `SUPERVISED` requires the runner-attached witness. Desktop
+soft preflight may write audit logs, but it reports `UNMANAGED` until a hard
+runner is attached.
+
 If the active profile is `cd`, PUB checks only the `cd` boundary: the Codex
 runtime must be routed through the PUB shell guard connector. If the active
 profile is `cc`, PUB checks only the `cc` boundary: Claude Code must have
@@ -174,7 +182,7 @@ checks, including `--bare`, `--safe-mode`,
 `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`,
 `--permission-mode bypassPermissions`, and `--permission-mode dontAsk`.
 
-Missing connectors, partial `cc` hook matchers, a disarmed `cc` gate switch,
+Missing connectors, partial `cc` hook matchers, legacy `cc` gate-switch drift,
 unexpected `cd` boundary routing, profile mismatch, or authority leakage all
 produce HOLD. This is agent runtime supervision, not a system-wide security
 product.
@@ -194,8 +202,8 @@ invariants:
 
 - Exactly one writable real-estate inside the cage: `project_root`.
 - The control plane that lives inside the project (`.claude/settings*.json`,
-  `pub_gate_switch.json`) is re-bound read-only over the writable project, so a
-  caged agent cannot rewrite its own hook registration to disarm pub.
+  `pub_gate_switch.json`) is re-bound read-only over the writable project. The
+  switch file is legacy/status-only; it cannot disarm pub.
 - Anything not bound does not exist in the cage, so a path spelled to escape
   (drive-relative, `~`, `..`, absolute-outside) lands on an unmounted path and
   fails at the OS, not at a path parser.
