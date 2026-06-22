@@ -1,0 +1,108 @@
+{
+  "schema": "pub_hardcore_ttp_v0",
+  "title": "Red-team round 4 -- real Windows filesystem TTPs vs pub's real transition_xray",
+  "generated_at": "2026-06-20T17:10:18",
+  "method": "ATT&CK-style primitives fired inside pub's enter/exit X-ray window; detection = mutation_state != STABLE or any finding.",
+  "summary": {
+    "ran": 9,
+    "caught": 8,
+    "missed": 1,
+    "skipped": 0
+  },
+  "missed": [
+    {
+      "ttp": "transient_blindspot_file",
+      "attck": "snapshot-gap"
+    }
+  ],
+  "results": [
+    {
+      "ttp": "write_on_readonly",
+      "attck": "T1565.001",
+      "detected": true,
+      "mutation_state": "MUTATED",
+      "findings": [
+        "HASH_MUTATED"
+      ],
+      "review_disposition": "PASS"
+    },
+    {
+      "ttp": "delete_in_window",
+      "attck": "T1070.004",
+      "detected": true,
+      "mutation_state": "MUTATED",
+      "findings": [
+        "HASH_MUTATED"
+      ],
+      "review_disposition": "PASS"
+    },
+    {
+      "ttp": "timestomp_content_tamper",
+      "attck": "T1070.006",
+      "detected": true,
+      "mutation_state": "MUTATED",
+      "findings": [
+        "HASH_MUTATED"
+      ],
+      "review_disposition": "PASS"
+    },
+    {
+      "ttp": "hardlink_alias_mutation",
+      "attck": "T1547/alias",
+      "detected": true,
+      "mutation_state": "MUTATED",
+      "findings": [
+        "HASH_MUTATED"
+      ],
+      "review_disposition": "QUARANTINE"
+    },
+    {
+      "ttp": "junction_path_redirection",
+      "attck": "T1547.009",
+      "detected": true,
+      "mutation_state": "MUTATED",
+      "findings": [
+        "HASH_MUTATED"
+      ],
+      "review_disposition": "PASS"
+    },
+    {
+      "ttp": "ads_stream_smuggling",
+      "attck": "T1564.004+T1070.006",
+      "detected": true,
+      "mutation_state": "MUTATED",
+      "findings": [
+        "HASH_MUTATED"
+      ],
+      "review_disposition": "PASS"
+    },
+    {
+      "ttp": "atomic_rename_swap",
+      "attck": "T1036/masquerade",
+      "detected": true,
+      "mutation_state": "MUTATED",
+      "findings": [
+        "HASH_MUTATED"
+      ],
+      "review_disposition": "PASS"
+    },
+    {
+      "ttp": "transient_blindspot_file",
+      "attck": "snapshot-gap",
+      "detected": false,
+      "mutation_state": "STABLE",
+      "findings": [],
+      "review_disposition": "PASS"
+    },
+    {
+      "ttp": "compound_chain",
+      "attck": "multi",
+      "detected": true,
+      "mutation_state": "MUTATED",
+      "findings": [
+        "HASH_MUTATED"
+      ],
+      "review_disposition": "QUARANTINE"
+    }
+  ]
+}
