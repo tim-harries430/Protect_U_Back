@@ -10,6 +10,7 @@ from parallel_audit import (
     EvidenceStage,
     EvidenceTestimony,
     ParallelAuditDecision,
+    reaggregate_parallel_decision,
     run_parallel_audit,
 )
 from transition_xray import (
@@ -18,6 +19,7 @@ from transition_xray import (
     XrayPiece,
     hash_unavailable,
     scan_transition_xray,
+    transition_access_witness_evidence,
 )
 from xray_field import XrayFieldObservation, sample_xray_potential_field
 from xray_transport import XrayTransportSeal
@@ -130,23 +132,54 @@ def single_frame_disguise(frame: TransitionXrayFrame) -> tuple[DisguiseSignal, .
 def seal_disguise(seal: XrayTransportSeal | None) -> tuple[DisguiseSignal, ...]:
     if seal is None:
         return ()
-    if not _seal_suspicious(seal):
-        return ()
     evidence = (
         f"continuity_state:{seal.continuity_state}",
         f"field_state:{seal.field_state}",
         f"mutation_state:{seal.mutation_state}",
         f"witness_count:{seal.witness_count}",
     )
-    return (
-        DisguiseSignal(
-            axis=DisguiseAxis.SUBSTITUTION,
-            piece_key=f"xray_transport:{seal.proposal_id}",
-            severity=ReviewDisposition.QUARANTINE,
-            detail="sealed transport reports non-stable mutation/continuity/field state",
-            evidence=evidence,
-        ),
-    )
+    # A declared write/delete changing its declared targets is the JOB, not a disguise.
+    # When close_xray_transport vouches the whole enter->exit transition as the
+    # declared mutation (expected_mutation), the seal has nothing adverse to add: the
+    # mutated/broken/witnessed/distorted readings are all just that change. Genuine
+    # per-piece blindspots and identity swaps (pointer/alias/container-escape) are
+    # reported by single_frame_disguise on the ENTER frame + _field_blindspot_signals,
+    # independent of this seal -- so suppressing here cannot hide them. A declared-READ
+    # op that mutated has expected_mutation False and still quarantines below.
+    if getattr(seal, "expected_mutation", False):
+        return ()
+    # Object-swap evidence: enter and exit disagree, or a witness fired -- the
+    # thing observed is not the thing acted on. THIS is a substitution (quarantine).
+    if (
+        seal.mutation_state != "STABLE"
+        or seal.continuity_state != "CONTINUOUS"
+        or seal.witness_count > 0
+    ):
+        return (
+            DisguiseSignal(
+                axis=DisguiseAxis.SUBSTITUTION,
+                piece_key=f"xray_transport:{seal.proposal_id}",
+                severity=ReviewDisposition.QUARANTINE,
+                detail="sealed transport reports non-stable mutation/continuity or a witness",
+                evidence=evidence,
+            ),
+        )
+    # Field distortion ALONE is an observation blindspot (a piece could not be
+    # vouched for), not a substitution. It HOLDs for review; mapping it to
+    # SUBSTITUTION/QUARANTINE turned benign unhashable / out-of-boundary reads into
+    # hard quarantines (the grounding oracle caught this generalising past the
+    # out-of-boundary patch).
+    if seal.field_state != "STABLE":
+        return (
+            DisguiseSignal(
+                axis=DisguiseAxis.OBSERVATION_BLINDSPOT,
+                piece_key=f"xray_transport:{seal.proposal_id}",
+                severity=ReviewDisposition.HOLD,
+                detail="sealed transport reports a distorted potential field (unobserved piece)",
+                evidence=evidence,
+            ),
+        )
+    return ()
 
 
 def review_from_frame(
@@ -189,7 +222,7 @@ def escalate_decision(
         return decision
 
     testimony = EvidenceTestimony(
-        stage=EvidenceStage.AGGREGATOR,
+        stage=EvidenceStage.DECODE_REVIEW,
         disposition=escalated,
         reason_code=review.reason_code,
         detail="X-ray review escalation: single-frame disguise detected post-aggregation.",
@@ -200,13 +233,7 @@ def escalate_decision(
             "axes": tuple(sorted({signal.axis.value for signal in review.signals})),
         },
     )
-    return dataclasses.replace(
-        decision,
-        disposition=escalated,
-        reason_code=review.reason_code,
-        primary_stage=EvidenceStage.AGGREGATOR,
-        testimonies=tuple(decision.testimonies) + (testimony,),
-    )
+    return reaggregate_parallel_decision(decision, (testimony,))
 
 
 def audit_with_xray_review(
@@ -233,7 +260,41 @@ def audit_with_xray_review(
         review = review_proposal(proposal, seal=base.xray_transport)
     else:
         review = _review_from_signals(seal_disguise(base.xray_transport))
-    return escalate_decision(base, review)
+    reviewed = escalate_decision(base, review)
+    access_testimony = _access_witness_testimony(base.xray_transport)
+    if access_testimony is None:
+        return reviewed
+    return reaggregate_parallel_decision(reviewed, (access_testimony,))
+
+
+def _access_witness_testimony(
+    seal: XrayTransportSeal | None,
+) -> EvidenceTestimony | None:
+    if seal is None or not seal.access_witness:
+        return None
+    witness = dict(seal.access_witness)
+    hold_required = bool(witness.get("requires_hold")) or witness.get("minimum_action") == "HOLD"
+    disposition = (
+        EvidenceDisposition.HOLD if hold_required else EvidenceDisposition.PASS
+    )
+    state = str(witness.get("state") or "UNKNOWN")
+    return EvidenceTestimony(
+        stage=EvidenceStage.DECODE_REVIEW,
+        disposition=disposition,
+        reason_code=f"OMEGA_ACCESS_{state}",
+        detail="Omega access witness attached as decode testimony.",
+        evidence=transition_access_witness_evidence(witness),
+        metadata={
+            "overlay": "omega_access",
+            "state": state,
+            "equation_applied": bool(witness.get("equation_applied")),
+            "minimum_action": witness.get("minimum_action"),
+            "residual_count": witness.get("residual_count"),
+            "explained_count": witness.get("explained_count"),
+            "witness_hash": witness.get("witness_hash"),
+            "testimony_only": True,
+        },
+    )
 
 
 def _piece_signals(piece: XrayPiece) -> tuple[DisguiseSignal, ...]:
@@ -278,20 +339,26 @@ def _piece_signals(piece: XrayPiece) -> tuple[DisguiseSignal, ...]:
             ("sensitive_marker",),
         )
 
+    archive_sensitive = details.get("archive_sensitive_entries")
+    if (
+        _non_empty_sequence(archive_sensitive)
+        and DisguiseAxis.SENSITIVE_SURFACE not in matched
+    ):
+        matched[DisguiseAxis.SENSITIVE_SURFACE] = _signal(
+            DisguiseAxis.SENSITIVE_SURFACE,
+            piece,
+            "sensitive surface: archive smuggles a protected/secret file",
+            tuple(
+                f"sensitive:{entry}"
+                for entry in sorted(str(item) for item in archive_sensitive)
+            ),
+        )
+
     if _piece_blindspot(piece, details):
-        if piece.kind == "registered_action" and details.get("effect_modellable") is False:
-            blindspot_detail = (
-                "observation blindspot: turing-complete payload, effect not "
-                "modellable from command surface (Rice)"
-            )
-        else:
-            blindspot_detail = (
-                "observation blindspot: content or existence could not be sealed"
-            )
         matched[DisguiseAxis.OBSERVATION_BLINDSPOT] = _signal(
             DisguiseAxis.OBSERVATION_BLINDSPOT,
             piece,
-            blindspot_detail,
+            "observation blindspot: content or existence could not be sealed",
             _blindspot_evidence(piece, details),
         )
 
@@ -331,6 +398,13 @@ def _field_blindspot_signals(
     )
 
 
+# A zip-magic file we could not fully read/scan (unreadable, bomb-limited, or
+# truncated) is an observation blindspot -> HOLD, never a silent pass.
+_ARCHIVE_BLINDSPOT_STATUSES = frozenset(
+    {"archive_unreadable", "archive_resource_limit", "archive_truncated"}
+)
+
+
 def _piece_blindspot(piece: XrayPiece, details: Mapping[str, Any]) -> bool:
     if piece.exists is None:
         return True
@@ -342,10 +416,7 @@ def _piece_blindspot(piece: XrayPiece, details: Mapping[str, Any]) -> bool:
         return True
     if hash_unavailable(details):
         return True
-    # A registered action whose payload is a Turing-complete interpreter
-    # invocation: bytes are hashable, effect is not. Undecidable from surface,
-    # so it is a blindspot -- the box is sealed even though we can hash it.
-    if piece.kind == "registered_action" and details.get("effect_modellable") is False:
+    if details.get("archive_observation_status") in _ARCHIVE_BLINDSPOT_STATUSES:
         return True
     return False
 
@@ -365,11 +436,8 @@ def _blindspot_evidence(
         evidence.append("sha256:None")
     if hash_unavailable(details):
         evidence.append(f"hash_status:{details.get('hash_status')}")
-    if piece.kind == "registered_action" and details.get("effect_modellable") is False:
-        evidence.append("effect_modellable:False")
-        marker = details.get("opaque_executor")
-        if marker:
-            evidence.append(f"opaque_executor:{marker}")
+    if details.get("archive_observation_status") in _ARCHIVE_BLINDSPOT_STATUSES:
+        evidence.append(f"archive_observation_status:{details.get('archive_observation_status')}")
     return tuple(sorted(evidence))
 
 

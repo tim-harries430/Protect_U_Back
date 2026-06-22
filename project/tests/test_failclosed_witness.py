@@ -1,7 +1,7 @@
 """Fail-closed witness tests (PUB-OS Task 3, final wiring).
 
 When a cc cage's only audit egress is the out-of-cage ledger, a lost witness
-must TIGHTEN admission to HOLD rather than let an unrecorded action proceed.
+must TIGHTEN admission to a denied HOLD rather than let an unrecorded action proceed.
 These tests drive the escalation logic in ``run_pretool_admission`` by
 monkeypatching the witness status, so they are decoupled from socket transport
 and run under any interpreter (no AF_UNIX needed).
@@ -34,8 +34,8 @@ def _admit(proj, env):
         "session_id": "fc",
         "cwd": proj,
         "hook_event_name": "PreToolUse",
-        "tool_name": "Write",
-        "tool_input": {"file_path": proj + "/note.txt", "content": "hi"},
+        "tool_name": "Bash",
+        "tool_input": {"command": "git status --short"},
         "tool_use_id": "fc1",
     }
     return h.run_pretool_admission(json.dumps(event), environ=env)
@@ -52,7 +52,7 @@ def _with_witness(status):
     return original
 
 
-def test_lost_witness_escalates_a_passing_action_to_hold():
+def test_lost_witness_escalates_a_passing_action_to_denied_hold():
     with tempfile.TemporaryDirectory() as tmp:
         proj = tmp + "/repo"
         os.makedirs(proj)
@@ -62,7 +62,7 @@ def test_lost_witness_escalates_a_passing_action_to_hold():
         finally:
             h._mirror_to_ledger = original
 
-        assert _decision(adm) == "ask", "a lost witness must hold the action"
+        assert _decision(adm) == "deny", "a lost witness must deny native allow"
         reason = adm.output["hookSpecificOutput"]["permissionDecisionReason"]
         assert "PUB_OS_LEDGER_WITNESS_LOST" in reason
 
@@ -92,7 +92,7 @@ def test_not_configured_is_unchanged_default_behavior():
         assert _decision(adm) is None
 
 
-def test_gate_off_overrides_lost_witness():
+def test_gate_off_file_cannot_override_lost_witness():
     with tempfile.TemporaryDirectory() as tmp:
         proj = tmp + "/repo"
         os.makedirs(proj + "/.claude")
@@ -103,13 +103,15 @@ def test_gate_off_overrides_lost_witness():
         finally:
             h._mirror_to_ledger = original
 
-        # Operator's exit switch wins: nothing is blocked even with a lost witness.
-        assert adm.output is None
+        # A stale/off switch is only logged; lost witness remains denied HOLD.
+        assert _decision(adm) == "deny"
+        reason = adm.output["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "PUB_OS_LEDGER_WITNESS_LOST" in reason
 
 
 def test_lost_witness_does_not_downgrade_a_deny():
     # Escalation is tighten-only: an action already destined to be blocked must
-    # not be softened to "ask" by the witness-lost path.
+    # not be softened by the witness-lost path.
     with tempfile.TemporaryDirectory() as tmp:
         proj = tmp + "/repo"
         os.makedirs(proj)
@@ -130,7 +132,7 @@ def test_lost_witness_does_not_downgrade_a_deny():
         # The opaque-executor blindspot already holds/denies this; witness-lost
         # must not weaken whatever the gate decided.
         assert adm.blocked
-        assert _decision(adm) in {"ask", "deny"}
+        assert _decision(adm) == "deny"
 
 
 def _run_all():

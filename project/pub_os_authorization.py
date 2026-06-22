@@ -8,7 +8,7 @@ from os.path import normcase, normpath
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from parallel_audit import EvidenceDisposition, ParallelAuditDecision
+from parallel_audit import ParallelAuditDecision
 from pub_os_visibility import ObjectTouchEvent, TouchKind
 
 
@@ -128,8 +128,11 @@ def issue_lease_from_approval(
     ttl_ns: int = DEFAULT_LEASE_TTL_NS,
     one_shot: bool = True,
 ) -> CapabilityLease:
-    if decision.disposition != EvidenceDisposition.PASS:
-        raise ValueError(f"cannot issue runtime lease from non-PASS decision: {decision.disposition.value}")
+    if not decision.allows_pre_io:
+        raise ValueError(
+            "cannot issue runtime lease without dual-court PASS: "
+            f"{decision.disposition.value}"
+        )
     issued_at = int(now_ns if now_ns is not None else time.time_ns())
     if ttl_ns <= 0:
         raise ValueError("ttl_ns must be positive")

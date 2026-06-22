@@ -34,7 +34,12 @@ def test_codex_guard_blocks_destructive_shell_before_execution(tmp_path):
 
 def test_codex_guard_runs_real_shell_only_after_pass(tmp_path):
     rc = run_guarded_shell(
-        ("-c", "print('PUB_CODEX_PASS')"),
+        # (v2 fail-closed) the guard now HOLDs unknown / inline-code command
+        # words, so the "passes then executes" sentinel must be a modellable
+        # command word that the python real-shell also runs cleanly: `True`
+        # normalises to the verb `true` (modellable -> PASS) and `python -c
+        # "True"` exits 0.
+        ("-c", "True"),
         environ=env(tmp_path),
     )
 
@@ -170,11 +175,15 @@ def test_codex_guard_marks_in_place_sed_as_project_write(tmp_path):
         environ=env(tmp_path),
     )
 
-    assert decision.blocked is False
-    assert decision.disposition.value == "PASS"
+    # The decoder still correctly marks sed -i as a project read+write on a visible
+    # target (the subject of this test). pytest nests tmp_path under the pub repo,
+    # so that .py target lands inside the A2-protected root and is KILLed; assert
+    # the decode is right, then that A2 self-protection fires.
     assert decision.action.target_paths == ("src/example.py",)
     effect_values = {effect.value for effect in decision.action.expected_side_effects}
     assert effect_values == {"read", "write"}
+    assert decision.blocked is True
+    assert decision.reason_code == "PROTECT_PUB_INTERNAL_MUTATION_DENIED"
 
 
 def test_codex_guard_holds_opaque_python_writer_without_target(tmp_path):
@@ -189,7 +198,7 @@ def test_codex_guard_holds_opaque_python_writer_without_target(tmp_path):
 
     assert decision.blocked is True
     assert decision.disposition.value == "HOLD"
-    assert decision.reason_code == "XRAY_REVIEW_OBSERVATION_BLINDSPOT"
+    assert decision.reason_code == "COMMAND_SURFACE_OPAQUE_EXECUTION"
     effect_values = {effect.value for effect in decision.action.expected_side_effects}
     assert effect_values == {"read"}
 
@@ -238,6 +247,35 @@ def test_codex_guard_protects_claude_config_read_case_insensitively(tmp_path):
     assert decision.action.target_paths == (".CLAUDE/settings.local.json",)
 
 
+def test_codex_guard_protects_codex_config_read_case_insensitively(tmp_path):
+    decision = audit_shell_argv(
+        ("-lc", "cat .CODEX/config.toml"),
+        cwd=str(tmp_path),
+        environ=env(tmp_path),
+    )
+
+    assert decision.blocked is True
+    assert decision.disposition.value == "KILL"
+    assert decision.reason_code in {
+        "PROTECT_AUDIT_SURFACE_MUTATION_DENIED",
+        "CAPABILITY_PROTECTED_TARGET_DENIED",
+    }
+    assert decision.action.target_paths == (".CODEX/config.toml",)
+
+
+def test_codex_guard_protects_global_claude_config_as_pub_owned(tmp_path):
+    decision = audit_shell_argv(
+        ("-lc", "cat C:/Users/TestUser/.claude/settings.json"),
+        cwd=str(tmp_path),
+        environ=env(tmp_path),
+    )
+
+    assert decision.blocked is True
+    assert decision.disposition.value == "KILL"
+    assert decision.reason_code == "CAPABILITY_PROTECTED_TARGET_DENIED"
+    assert decision.action.target_paths == ("C:/Users/TestUser/.claude/settings.json",)
+
+
 def test_codex_guard_holds_indirect_shell_command_variable(tmp_path):
     decision = audit_shell_argv(
         ("-lc", "D=rm; $D -rf /tmp/pub_probe"),
@@ -247,9 +285,31 @@ def test_codex_guard_holds_indirect_shell_command_variable(tmp_path):
 
     assert decision.blocked is True
     assert decision.disposition.value == "HOLD"
-    assert decision.reason_code == "CAPABILITY_PROCESS_EQUATION_INCOMPLETE"
+    # v2: an indirect/dynamic shell word ($D) is opaque execution under the
+    # fail-closed recognizer (was UNKNOWN_COMMAND_SURFACE in the v1 split).
+    assert decision.reason_code == "COMMAND_SURFACE_OPAQUE_EXECUTION"
     effect_values = {effect.value for effect in decision.action.expected_side_effects}
     assert effect_values == {"read", "write"}
+
+
+@pytest.mark.parametrize(
+    "command",
+    (
+        'F=README.md; cat "$F"',
+        'F=reports/out.md; echo ok > "$F"',
+    ),
+)
+def test_codex_guard_holds_unresolved_variable_targets(tmp_path, command):
+    decision = audit_shell_argv(
+        ("-lc", command),
+        cwd=str(tmp_path),
+        environ=env(tmp_path),
+    )
+
+    assert decision.blocked is True
+    assert decision.disposition.value == "HOLD"
+    assert decision.reason_code == "PATH_TARGET_UNRESOLVED"
+    assert decision.action.target_paths == ("$F",)
 
 
 @pytest.mark.parametrize(

@@ -7,7 +7,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from adapter_wall import ActionEnvelope, AdapterActionType
 from ot_gate import SideEffect
-from parallel_audit import EvidenceDisposition, ParallelAuditDecision
+from parallel_audit import ParallelAuditDecision
 from phi_registry import ActorType, PhiRegistry
 from protect_scan import confirm_protect_scan, default_protect_scan_profile
 from pub_os_authorization import (
@@ -92,12 +92,15 @@ def authorize_touch_for_lease(
     root = str(Path(project_root or session.project_root).resolve(strict=False))
     action = action_envelope_from_touch(event, project_root=root)
     decision = (audit_fn or _default_audit)(action, project_root=root)
-    if decision.disposition != EvidenceDisposition.PASS:
+    if not decision.allows_pre_io:
         return _hold(
             event,
             visibility,
             decision.reason_code,
-            evidence=(f"audit:{decision.disposition.value}",),
+            evidence=(
+                f"audit:{decision.disposition.value}",
+                f"dual_court_pass:{str(decision.dual_court_pass).lower()}",
+            ),
             audit_decision=decision,
         )
 

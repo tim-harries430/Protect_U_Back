@@ -15,9 +15,8 @@ Security-load-bearing invariants (everything else is runtime plumbing):
   1. Exactly ONE writable real-estate inside the cage: ``project_root``.
   2. The control plane that lives inside the project (CC hook registration in
      ``.claude/settings*.json`` and ``pub_gate_switch.json``) is re-bound
-     READ-ONLY over the writable project, so the caged agent cannot disarm its
-     own watchdog. (Closes the settings-disarm / gate-switch findings at the OS,
-     not at a path parser.)
+     READ-ONLY over the writable project. The switch file is legacy/status-only;
+     it cannot disarm the watchdog.
   3. Anything not bound simply does not exist in the cage, so a write spelled to
      escape the sandbox (drive-relative, ``~``, ``..``, absolute-outside) lands
      on a path the cage never mounted and fails at the OS layer.

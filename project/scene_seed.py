@@ -314,7 +314,15 @@ def _surrounding_state(path: Path, *, max_file_bytes: int | None) -> Surrounding
         }
         return SurroundingObjectState(**values, metadata_hash="sha256:" + _sha256_json(values))
 
-    object_type = "directory" if path.is_dir() else "file" if path.is_file() else "other"
+    try:
+        object_type = "directory" if path.is_dir() else "file" if path.is_file() else "other"
+    except OSError:
+        # is_dir()/is_file() FOLLOW the link and can raise (e.g. a broken symlink
+        # whose target probe fails -- WinError 1920 / ELOOP). lstat() already proved
+        # the entry exists; a single malformed entry must NOT crash the whole
+        # surroundings capture and silently disable the scene judge. Degrade to
+        # "other" (still observed, just not content-hashed).
+        object_type = "other"
     content_hash = None
     skipped = False
     hash_error = None

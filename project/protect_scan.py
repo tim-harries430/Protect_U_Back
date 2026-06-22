@@ -8,7 +8,13 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Sequence, Set
 from urllib.parse import urlparse
 
+from agent_control_surface import is_agent_control_surface_path
 from ot_gate import CommandProposal, SideEffect
+from probe_authority_surface import (
+    internal_probe_path_evidence,
+    is_internal_probe_artifact_path,
+    probe_authority_text_evidence,
+)
 from safe_path import safe_resolve
 
 
@@ -92,6 +98,11 @@ LEDGER_TOKENS = (
     "events.jsonl",
 )
 AUDIT_TOKENS = (
+    ".claude\\",
+    ".claude/",
+    ".codex\\",
+    ".codex/",
+    "pub_gate_switch.json",
     "audit_layer.py",
     "autopsy_report.py",
     "capability_wall.py",
@@ -118,6 +129,7 @@ PERMISSION_TOKENS = (
 )
 SECRET_TOKENS = (
     ".env",
+    ".codex",
     "/secrets",
     "\\secrets",
     "api_key",
@@ -533,6 +545,74 @@ def _findings_for(
     paths = _resolved_targets(proposal)
     findings = []
 
+    # A2 fix: PUB internal modules protected by DIRECTORY MEMBERSHIP, not a
+    # hand-maintained filename list (which silently missed transition_xray,
+    # xray_*, temporal_continuity, opaque_executor, safe_path, the hooks).
+    # No write/delete/privilege/audit mutation may be passed to any .py under
+    # the PUB install root. Anchored on __file__ -- guards PUB itself no matter
+    # which external project is audited; internal, never an external file.
+    _pub_internal_root = Path(__file__).resolve().parent
+    internal_mutation = tuple(
+        str(path)
+        for path in paths
+        if str(path).lower().endswith(".py") and _is_within(path, _pub_internal_root)
+    )
+    if internal_mutation and effects & {
+        SideEffect.WRITE,
+        SideEffect.DELETE,
+        SideEffect.PRIVILEGE,
+        SideEffect.AUDIT_CHANGE,
+    }:
+        findings.append(
+            _finding(
+                ProtectSurface.AUDIT_STORE,
+                ProtectScanSeverity.KILL,
+                "PROTECT_PUB_INTERNAL_MUTATION_DENIED",
+                "no write may be passed to a Protect U Back internal module",
+                internal_mutation,
+            )
+        )
+
+    if effects & {
+        SideEffect.WRITE,
+        SideEffect.DELETE,
+        SideEffect.PRIVILEGE,
+        SideEffect.AUDIT_CHANGE,
+    }:
+        probe_targets = tuple(
+            str(path)
+            for path in paths
+            if is_internal_probe_artifact_path(
+                path,
+                project_roots=profile.project_roots,
+            )
+        )
+        probe_text_evidence = probe_authority_text_evidence(proposal.command_text)
+        if probe_targets or probe_text_evidence:
+            path_evidence = tuple(
+                item
+                for path in probe_targets
+                for item in internal_probe_path_evidence(path)
+            )
+            findings.append(
+                _finding(
+                    ProtectSurface.AUDIT_STORE,
+                    ProtectScanSeverity.KILL,
+                    "PROTECT_PROBE_MINT_UNAUTHORIZED",
+                    "agent may not mint PUB internal probe or authority artifacts",
+                    tuple(
+                        dict.fromkeys(
+                            (
+                                "probe_authority_egress",
+                                *probe_targets,
+                                *path_evidence,
+                                *probe_text_evidence,
+                            )
+                        )
+                    ),
+                )
+            )
+
     if ProtectSurface.SANDBOX_BOUNDARY in profile.enabled_surfaces:
         findings.extend(_sandbox_findings(proposal, effects))
 
@@ -628,9 +708,13 @@ def _findings_for(
             )
         )
 
-    if ProtectSurface.AUDIT_STORE in profile.enabled_surfaces and _contains_any(
-        text,
-        AUDIT_TOKENS,
+    agent_control_evidence = tuple(
+        str(path)
+        for path in paths
+        if is_agent_control_surface_path(path, project_roots=profile.project_roots)
+    )
+    if ProtectSurface.AUDIT_STORE in profile.enabled_surfaces and (
+        agent_control_evidence or _contains_any(text, AUDIT_TOKENS)
     ):
         findings.append(
             _finding(
@@ -641,8 +725,8 @@ def _findings_for(
                     "PROTECT_AUDIT_SURFACE_MUTATION_DENIED",
                     "PROTECT_AUDIT_SURFACE_REQUIRES_CONFIRMATION",
                 ),
-                "proposal touches audit implementation or storage surface",
-                _token_evidence(text, AUDIT_TOKENS),
+                "proposal touches audit implementation, storage, or agent control surface",
+                tuple(dict.fromkeys(agent_control_evidence + _token_evidence(text, AUDIT_TOKENS))),
             )
         )
 
@@ -1227,7 +1311,11 @@ def _surface_evidence(
     tokens: Sequence[str],
 ) -> Sequence[str]:
     evidence = list(_token_evidence(text, tokens))
-    evidence.extend(str(path) for path in paths if ".phi" in {part.lower() for part in path.parts})
+    evidence.extend(
+        str(path)
+        for path in paths
+        if {part.lower() for part in path.parts} & {".phi", ".claude", ".codex"}
+    )
     return tuple(evidence)
 
 
@@ -1243,9 +1331,37 @@ def _network_evidence(proposal: CommandProposal, text: str) -> Sequence[str]:
 def _inferred_effects(proposal: CommandProposal) -> Set[SideEffect]:
     text = _combined_text(proposal)
     effects = set(proposal.expected_side_effects)
-    if _contains_any(text, ("set-content", "out-file", "add-content", "new-item", "copy-item", "move-item", ">")):
+    if _contains_any(
+        text,
+        (
+            "set-content",
+            "out-file",
+            "add-content",
+            "new-item",
+            "copy-item",
+            "move-item",
+            "truncate",
+            "git checkout --",
+            ">",
+        ),
+    ):
         effects.add(SideEffect.WRITE)
-    if _contains_any(text, ("remove-item", " del ", "erase", " rm ", "rmdir", "clear-content")):
+    if _contains_any(
+        text,
+        (
+            "remove-item",
+            " del ",
+            "erase",
+            " rm ",
+            "rmdir",
+            "clear-content",
+            "truncate",
+            " -delete",
+            "git clean",
+            "git reset --hard",
+            "git checkout --",
+        ),
+    ):
         effects.add(SideEffect.DELETE)
     if _contains_any(text, NETWORK_TOKENS):
         effects.add(SideEffect.NETWORK)
@@ -1288,33 +1404,30 @@ def _network_present(
     text: str,
     effects: Set[SideEffect],
 ) -> bool:
-    if _gateway_loopback_valid(proposal):
+    if _egress_targets_all_loopback(proposal):
         return False
     if SideEffect.NETWORK in effects or _contains_any(text, NETWORK_TOKENS):
         return True
     return any(urlparse(str(target)).scheme in {"http", "https"} for target in proposal.target_paths)
 
 
-def _gateway_loopback_valid(proposal: CommandProposal) -> bool:
-    gateway = _gateway_evidence(proposal.raw_payload)
-    if not gateway or not _gateway_auth_valid(gateway):
-        return False
-    hosts = tuple(
+def _egress_targets_all_loopback(proposal: CommandProposal) -> bool:
+    # A3: the network wall is suppressed ONLY when the PHYSICAL egress target is
+    # provably loopback (its URL host is 127.0.0.1 / localhost / ::1). The agent's
+    # self-declared gateway dict (bind_host / host / auth_valid / public) is NOT
+    # trusted to stand the wall down -- a forged {auth_valid:true, bind_host:
+    # 127.0.0.1} cannot suppress egress ("trust the physical target, not the
+    # self-report"). A real local server (curl http://127.0.0.1/...) still passes
+    # because its target host is physically loopback. With no verifiable loopback
+    # target the wall STANDS (fail-closed); it does not silently pass. Loopback is
+    # safe regardless of the gateway's auth claim -- data cannot leave the host --
+    # so auth/exposure are judged separately by _gateway_findings, not here.
+    target_hosts = tuple(
         host
-        for host in (
-            str(gateway.get("bind_host", "")),
-            str(gateway.get("host", "")),
-            *(_url_host(str(target)) for target in proposal.target_paths),
-        )
+        for host in (_url_host(str(target)) for target in proposal.target_paths)
         if host
     )
-    insecure = bool(
-        gateway.get("allowInsecureAuth")
-        or gateway.get("allow_insecure_auth")
-        or gateway.get("insecure_auth")
-    )
-    public = bool(gateway.get("public") or gateway.get("public_url"))
-    return bool(hosts) and all(_is_loopback_host(host) for host in hosts) and not insecure and not public
+    return bool(target_hosts) and all(_is_loopback_host(host) for host in target_hosts)
 
 
 def _has_path_traversal(value: str) -> bool:
@@ -1343,8 +1456,8 @@ def _resolve_target(cwd: str, target_path: str) -> Path:
 
 
 def _is_within(path: Path, root: Path) -> bool:
-    path_text = normcase(normpath(str(path)))
-    root_text = normcase(normpath(str(root))).rstrip("\\/")
+    path_text = normcase(normpath(str(path))).casefold()
+    root_text = normcase(normpath(str(root))).rstrip("\\/").casefold()
     return (
         path_text == root_text
         or path_text.startswith(root_text + "\\")

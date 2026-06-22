@@ -229,6 +229,68 @@ def test_project_outside_read_holds_to_reduce_false_positive():
     assert result.rejected_targets
 
 
+def test_global_agent_control_read_is_pub_owned_not_plain_external_read():
+    result = assert_decision(
+        r"Get-Content C:\Users\TestUser\.claude\settings.json",
+        CapabilityDisposition.KILL,
+        "CAPABILITY_PROTECTED_TARGET_DENIED",
+        target_paths=(r"C:\Users\TestUser\.claude\settings.json",),
+    )
+
+    assert result.evidence == ("protected_control_target",)
+
+
+def test_global_codex_control_read_is_pub_owned_not_plain_external_read():
+    result = assert_decision(
+        r"Get-Content C:\Users\TestUser\.codex\config.toml",
+        CapabilityDisposition.KILL,
+        "CAPABILITY_PROTECTED_TARGET_DENIED",
+        target_paths=(r"C:\Users\TestUser\.codex\config.toml",),
+    )
+
+    assert result.evidence == ("protected_control_target",)
+
+
+def test_agent_cannot_mint_pub_internal_probe_in_control_dir():
+    result = assert_decision(
+        'Set-Content .pub_codex_guard\\session_receipt.json \'{"connected":true}\'',
+        CapabilityDisposition.KILL,
+        "CAPABILITY_PROBE_MINT_UNAUTHORIZED",
+        declared_scope=DeclaredScope.PROJECT_WRITE,
+        target_paths=(r".pub_codex_guard\session_receipt.json",),
+        expected_side_effects={SideEffect.WRITE},
+    )
+
+    assert "probe_authority_egress" in result.evidence
+    assert "pub_probe_control_path" in result.evidence
+
+
+def test_agent_cannot_mint_pub_probe_authority_artifact_by_name():
+    result = assert_decision(
+        r"Set-Content pub_os_runner_receipt.json '{}'",
+        CapabilityDisposition.KILL,
+        "CAPABILITY_PROBE_MINT_UNAUTHORIZED",
+        declared_scope=DeclaredScope.PROJECT_WRITE,
+        target_paths=("pub_os_runner_receipt.json",),
+        expected_side_effects={SideEffect.WRITE},
+    )
+
+    assert "pub_probe_authority_name" in result.evidence
+
+
+def test_regular_project_probe_file_is_not_internal_probe_authority():
+    result = assert_decision(
+        r"Set-Content docs\probe_case.json '{}'",
+        CapabilityDisposition.ALLOW,
+        "CAPABILITY_PASS",
+        declared_scope=DeclaredScope.PROJECT_WRITE,
+        target_paths=(r"docs\probe_case.json",),
+        expected_side_effects={SideEffect.WRITE},
+    )
+
+    assert result.matched_side_effects == (SideEffect.WRITE,)
+
+
 def test_project_outside_write_kills():
     result = assert_decision(
         r"Set-Content C:\Users\TestUser\Desktop\out.txt 'x'",

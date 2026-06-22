@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+import shlex
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from os.path import normcase, normpath
@@ -23,7 +25,9 @@ from llm_channel import (
     ChannelPolicy,
     audit_channel_envelope,
 )
-from ot_gate import CommandProposal, DeclaredScope, SideEffect
+from ot_gate import CommandProposal, DeclaredScope, ExecutionDecision, OTGateResult
+from ot_gate import OTPolicy, SideEffect, audit_command_proposal
+from opaque_executor import is_opaque_executor
 from phi_registry import PhiRegistry
 from protect_scan import (
     ProtectScanDecision,
@@ -52,12 +56,20 @@ class EvidenceDisposition(str, Enum):
 class EvidenceStage(str, Enum):
     ADMISSION = "ADMISSION"
     CHANNEL_AUDIT = "CHANNEL_AUDIT"
+    COMMAND_SURFACE = "COMMAND_SURFACE"
+    OT_GATE = "OT_GATE"
     CAPABILITY_PRECHECK = "CAPABILITY_PRECHECK"
     PATH_SCAN = "PATH_SCAN"
     NETWORK_SCAN = "NETWORK_SCAN"
     PATCH_AUDIT = "PATCH_AUDIT"
     PROTECT_SCAN = "PROTECT_SCAN"
     AGGREGATOR = "AGGREGATOR"
+    DECODE_REVIEW = "DECODE_REVIEW"
+
+
+class EvidenceCourt(str, Enum):
+    OT = "OT"
+    DECODE = "DECODE"
 
 
 @dataclass(frozen=True)
@@ -104,14 +116,64 @@ class EvidenceTestimony:
 
 
 @dataclass(frozen=True)
+class CourtVerdict:
+    court: EvidenceCourt
+    disposition: EvidenceDisposition
+    reason_code: str
+    primary_stage: EvidenceStage
+    testimonies: Sequence[EvidenceTestimony]
+    can_execute: bool = False
+    can_grant_permission: bool = False
+
+    def __post_init__(self):
+        if isinstance(self.court, str):
+            object.__setattr__(self, "court", EvidenceCourt(self.court))
+
+        if isinstance(self.disposition, str):
+            object.__setattr__(
+                self,
+                "disposition",
+                EvidenceDisposition(self.disposition),
+            )
+
+        if isinstance(self.primary_stage, str):
+            object.__setattr__(self, "primary_stage", EvidenceStage(self.primary_stage))
+
+        object.__setattr__(self, "testimonies", tuple(self.testimonies))
+        object.__setattr__(self, "can_execute", False)
+        object.__setattr__(self, "can_grant_permission", False)
+
+    @property
+    def passed(self) -> bool:
+        return self.disposition == EvidenceDisposition.PASS
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "court": self.court.value,
+            "disposition": self.disposition.value,
+            "reason_code": self.reason_code,
+            "primary_stage": self.primary_stage.value,
+            "testimony_count": len(self.testimonies),
+            "testimony_reason_codes": tuple(
+                testimony.reason_code for testimony in self.testimonies
+            ),
+            "can_execute": False,
+            "can_grant_permission": False,
+        }
+
+
+@dataclass(frozen=True)
 class ParallelEvidenceBundle:
     channel_testimony: EvidenceTestimony
+    command_surface_testimony: EvidenceTestimony
+    ot_gate_testimony: EvidenceTestimony
     capability_precheck: EvidenceTestimony
     path_testimony: EvidenceTestimony
     network_testimony: EvidenceTestimony
     patch_testimony: EvidenceTestimony
     protect_testimony: EvidenceTestimony
     channel_result: ChannelAuditResult
+    ot_gate_result: OTGateResult
     capability_decision: CapabilityDecision
     protect_scan_decision: ProtectScanDecision
     proposal: CommandProposal
@@ -121,6 +183,8 @@ class ParallelEvidenceBundle:
     def testimonies(self) -> Sequence[EvidenceTestimony]:
         return (
             self.channel_testimony,
+            self.command_surface_testimony,
+            self.ot_gate_testimony,
             self.capability_precheck,
             self.path_testimony,
             self.network_testimony,
@@ -132,6 +196,7 @@ class ParallelEvidenceBundle:
         return {
             "testimonies": tuple(testimony.to_dict() for testimony in self.testimonies),
             "channel": self.channel_result.to_dict(),
+            "ot_gate": _ot_gate_result_dict(self.ot_gate_result),
             "capability_precheck": self.capability_decision.to_dict(),
             "protect_scan": self.protect_scan_decision.to_dict(),
             "proposal_id": self.proposal.proposal_id,
@@ -153,6 +218,8 @@ class ParallelAuditDecision:
     evidence_bundle: Optional[ParallelEvidenceBundle] = None
     xray_transport: Optional[XrayTransportSeal] = None
     capability_certificate: Optional[CapabilityCertificate] = None
+    ot_court: Optional[CourtVerdict] = None
+    decode_court: Optional[CourtVerdict] = None
     would_enter_ot: bool = False
     io_executed: bool = False
     can_execute: bool = False
@@ -177,10 +244,31 @@ class ParallelAuditDecision:
             )
 
         object.__setattr__(self, "testimonies", tuple(self.testimonies))
-        object.__setattr__(self, "would_enter_ot", self.disposition == EvidenceDisposition.PASS)
+        object.__setattr__(self, "would_enter_ot", self.allows_pre_io)
         object.__setattr__(self, "io_executed", False)
         object.__setattr__(self, "can_execute", False)
         object.__setattr__(self, "can_grant_permission", False)
+
+    @property
+    def dual_court_pass(self) -> bool:
+        return bool(
+            self.ot_court is not None
+            and self.decode_court is not None
+            and self.ot_court.passed
+            and self.decode_court.passed
+        )
+
+    @property
+    def dual_court_conflict(self) -> bool:
+        return bool(
+            self.ot_court is not None
+            and self.decode_court is not None
+            and self.ot_court.disposition != self.decode_court.disposition
+        )
+
+    @property
+    def allows_pre_io(self) -> bool:
+        return self.disposition == EvidenceDisposition.PASS and self.dual_court_pass
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -208,6 +296,17 @@ class ParallelAuditDecision:
                 if self.capability_certificate is not None
                 else None
             ),
+            "ot_court": self.ot_court.to_dict() if self.ot_court is not None else None,
+            "decode_court": (
+                self.decode_court.to_dict()
+                if self.decode_court is not None
+                else None
+            ),
+            "dual_court_rule": "PASS requires OT_PASS and DECODE_PASS",
+            "dual_court_conflict_rule": "OT/DECODE disagreement cannot relax; outcome is HOLD or stronger",
+            "dual_court_pass": self.dual_court_pass,
+            "dual_court_conflict": self.dual_court_conflict,
+            "allows_pre_io": self.allows_pre_io,
             "would_enter_ot": self.would_enter_ot,
             "io_executed": False,
             "can_execute": False,
@@ -223,6 +322,7 @@ def run_parallel_audit(
     protect_profile: ProtectScanProfile,
     admission_policy: AdmissionPolicy = AdmissionPolicy(),
     channel_policy: Optional[ChannelPolicy] = None,
+    ot_policy: Optional[OTPolicy] = None,
     capability_policy: Optional[CapabilityPolicy] = None,
 ) -> ParallelAuditDecision:
     channel = action.to_channel_envelope()
@@ -243,10 +343,7 @@ def run_parallel_audit(
             detail="Registry Admission stopped the action before evidence bundle.",
             evidence=admission.evidence,
         )
-        return ParallelAuditDecision(
-            disposition=disposition,
-            reason_code=admission.reason_code,
-            primary_stage=EvidenceStage.ADMISSION,
+        return _decision_from_testimonies(
             testimonies=(testimony,),
             admission_ticket=admission,
             xray_transport=xray_transport,
@@ -259,6 +356,8 @@ def run_parallel_audit(
         project_root=project_root,
         protect_profile=protect_profile,
         channel_policy=channel_policy or ChannelPolicy(project_root=project_root),
+        ot_policy=ot_policy
+        or OTPolicy(project_roots=(project_root,), registry=registry),
         capability_policy=capability_policy
         or default_capability_policy(project_root, (action.actor_id,)),
     )
@@ -274,12 +373,14 @@ def build_parallel_evidence_bundle(
     project_root: str,
     protect_profile: ProtectScanProfile,
     channel_policy: Optional[ChannelPolicy] = None,
+    ot_policy: Optional[OTPolicy] = None,
     capability_policy: Optional[CapabilityPolicy] = None,
     proposal: Optional[CommandProposal] = None,
     xray_transport: Optional[XrayTransportSeal] = None,
 ) -> ParallelEvidenceBundle:
     channel = channel or action.to_channel_envelope()
     channel_policy = channel_policy or ChannelPolicy(project_root=project_root)
+    ot_policy = ot_policy or OTPolicy(project_roots=(project_root,))
     capability_policy = capability_policy or default_capability_policy(
         project_root,
         (action.actor_id,),
@@ -287,17 +388,21 @@ def build_parallel_evidence_bundle(
     proposal = proposal or _proposal_from_action(action)
 
     channel_result = audit_channel_envelope(channel, channel_policy)
+    ot_gate_result = audit_command_proposal(proposal, ot_policy)
     capability_decision = audit_capability(proposal, capability_policy)
     protect_decision = audit_protect_scan(proposal, protect_profile)
 
     return ParallelEvidenceBundle(
         channel_testimony=_channel_testimony(channel_result),
+        command_surface_testimony=audit_command_surface(action),
+        ot_gate_testimony=_ot_gate_testimony(ot_gate_result),
         capability_precheck=_capability_precheck_testimony(capability_decision),
         path_testimony=audit_path_scan(action, project_root),
         network_testimony=audit_network_scan(action),
         patch_testimony=audit_patch_surface(action),
         protect_testimony=_protect_testimony(protect_decision),
         channel_result=channel_result,
+        ot_gate_result=ot_gate_result,
         capability_decision=capability_decision,
         protect_scan_decision=protect_decision,
         proposal=proposal,
@@ -310,22 +415,222 @@ def aggregate_parallel_evidence(
     *,
     admission_ticket: Optional[AdmissionTicket] = None,
 ) -> ParallelAuditDecision:
-    primary = _primary_testimony(bundle.testimonies)
-    certificate = _formal_capability_certificate(bundle, primary)
-    return ParallelAuditDecision(
-        disposition=primary.disposition,
-        reason_code=primary.reason_code,
-        primary_stage=primary.stage,
-        testimonies=bundle.testimonies,
+    testimonies = _admission_testimonies(admission_ticket) + tuple(bundle.testimonies)
+    return _decision_from_testimonies(
+        testimonies=testimonies,
         admission_ticket=admission_ticket,
         evidence_bundle=bundle,
         xray_transport=bundle.xray_transport,
-        capability_certificate=certificate,
     )
 
 
+def reaggregate_parallel_decision(
+    decision: ParallelAuditDecision,
+    extra_testimonies: Sequence[EvidenceTestimony] = (),
+) -> ParallelAuditDecision:
+    return _decision_from_testimonies(
+        testimonies=tuple(decision.testimonies) + tuple(extra_testimonies),
+        admission_ticket=decision.admission_ticket,
+        evidence_bundle=decision.evidence_bundle,
+        xray_transport=decision.xray_transport,
+    )
+
+
+COMMAND_SURFACE_OPERATORS = frozenset({"|", "||", "&&", ";", "&", "(", ")", "{", "}", "|&", "\n"})
+COMMAND_SURFACE_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+COMMAND_SURFACE_WRAPPERS = frozenset(
+    {
+        "env",
+        "command",
+        "builtin",
+        "exec",
+        "sudo",
+        "doas",
+        "nice",
+        "ionice",
+        "nohup",
+        "setsid",
+        "stdbuf",
+        "time",
+        "timeout",
+        "then",
+        "do",
+        "else",
+    }
+)
+COMMAND_SURFACE_WRAPPER_VALUES = frozenset({"timeout", "nice", "ionice", "stdbuf"})
+MODELLABLE_COMMAND_WORDS = frozenset(
+    {
+        "cat", "head", "tail", "less", "more", "bat", "nl", "tac", "rev", "fold",
+        "grep", "egrep", "fgrep", "rg", "ag", "ack", "look",
+        "ls", "dir", "find", "tree", "stat", "file", "readlink", "realpath",
+        "wc", "sort", "uniq", "cut", "tr", "comm", "join", "paste", "column",
+        "od", "xxd", "hexdump", "strings",
+        "echo", "printf", "seq", "yes", "pwd", "basename", "dirname",
+        "date", "cal", "which", "whereis", "type", "hostname", "whoami", "id",
+        "uname", "printenv", "du", "df", "diff", "cmp",
+        "md5sum", "sha1sum", "sha256sum", "sha512sum", "cksum", "b2sum", "jq", "yq",
+        "touch", "mkdir", "tee", "cp", "copy", "mv", "move", "truncate",
+        "mktemp", "rm", "rmdir", "unlink", "sed", "git",
+        "curl", "wget", "chmod", "chown", "icacls",
+        # install / shred / ln / chgrp deliberately EXCLUDED: no effect layer
+        # models them, so they must fail-closed to UNKNOWN_COMMAND_SURFACE -> HOLD
+        # rather than be vouched "modellable" and judged READ (red-team B1).
+        "get-content", "set-content", "add-content", "clear-content",
+        "remove-item", "copy-item", "move-item", "new-item", "out-file",
+        "select-string", "invoke-webrequest", "iwr",
+        "true", "false", "test", "[", ":", "cd", "export", "set", "unset", "read",
+        "exit", "return", "alias", "unalias", "history", "clear", "sleep",
+        "wait", "umask", "ulimit", "pushd", "popd", "dirs",
+        # Known families with benign query forms. Execution forms are caught by
+        # opaque_executor first and held by this PUB stage.
+        "python", "python2", "python3", "py", "pypy", "pypy3",
+        "perl", "ruby", "node", "nodejs", "php", "rscript",
+        "pip", "pip3", "pipx", "npm", "pnpm", "yarn", "uv", "poetry",
+        "cargo", "go", "bundle", "jupyter", "deno", "bun",
+        "docker", "docker-compose", "kubectl",
+    }
+)
+
+
+def audit_command_surface(action: ActionEnvelope) -> EvidenceTestimony:
+    if not _is_shell_action(action):
+        return EvidenceTestimony(
+            stage=EvidenceStage.COMMAND_SURFACE,
+            disposition=EvidenceDisposition.PASS,
+            reason_code="COMMAND_SURFACE_NOT_SHELL",
+            detail="command-surface scan applies only to shell/Bash actions",
+        )
+    if _gateway_payload(action.raw_payload):
+        return EvidenceTestimony(
+            stage=EvidenceStage.COMMAND_SURFACE,
+            disposition=EvidenceDisposition.PASS,
+            reason_code="COMMAND_SURFACE_STRUCTURED_GATEWAY",
+            detail="structured gateway evidence is judged by the network/protect scans",
+        )
+
+    opaque, evidence = is_opaque_executor(action.command_text)
+    if opaque:
+        return EvidenceTestimony(
+            stage=EvidenceStage.COMMAND_SURFACE,
+            disposition=EvidenceDisposition.HOLD,
+            reason_code="COMMAND_SURFACE_OPAQUE_EXECUTION",
+            detail="interpreter or runner execution is observable but not effect-modellable from argv",
+            evidence=evidence,
+            metadata={"rule": "pub_command_surface_opaque_execution"},
+        )
+
+    unknown = _unknown_command_words(action.command_text)
+    if unknown:
+        return EvidenceTestimony(
+            stage=EvidenceStage.COMMAND_SURFACE,
+            disposition=EvidenceDisposition.HOLD,
+            reason_code="UNKNOWN_COMMAND_SURFACE",
+            detail="command-position word is not in pub's modellable command surface",
+            evidence=unknown,
+            metadata={"rule": "pub_unknown_command_surface_holds"},
+        )
+
+    return EvidenceTestimony(
+        stage=EvidenceStage.COMMAND_SURFACE,
+        disposition=EvidenceDisposition.PASS,
+        reason_code="COMMAND_SURFACE_PASS",
+        detail="command-position words are known to pub's surface model",
+    )
+
+
+def _is_shell_action(action: ActionEnvelope) -> bool:
+    return (
+        action.action_type == AdapterActionType.SHELL
+        or str(action.tool_name).strip().lower() in {"bash", "shell"}
+        or str(action.action_type.value).strip().lower() in {"bash", "shell"}
+    )
+
+
+def _unknown_command_words(command_text: str) -> tuple[str, ...]:
+    unknown: list[str] = []
+    for segment in _command_surface_segments(_command_surface_tokens(command_text)):
+        base, _rest = _command_surface_word(segment)
+        if base is not None and not _known_command_word(base):
+            unknown.append(base)
+    return tuple(dict.fromkeys(unknown))
+
+
+def _known_command_word(base: str) -> bool:
+    return (
+        base in MODELLABLE_COMMAND_WORDS
+        or bool(re.fullmatch(r"python\d+(?:\.\d+)?", base))
+        or bool(re.fullmatch(r"perl\d+(?:\.\d+)?", base))
+    )
+
+
+def _command_surface_tokens(command_text: str) -> list[str]:
+    try:
+        return shlex.split(command_text, posix=True)
+    except ValueError:
+        return command_text.split()
+
+
+def _command_surface_segments(tokens: list[str]) -> list[list[str]]:
+    segments: list[list[str]] = []
+    current: list[str] = []
+    for token in tokens:
+        if token in COMMAND_SURFACE_OPERATORS:
+            if current:
+                segments.append(current)
+                current = []
+        else:
+            current.append(token)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def _command_surface_word(segment: list[str]) -> tuple[str | None, list[str]]:
+    index = 0
+    while index < len(segment):
+        token = segment[index]
+        base = _surface_basename(token).lstrip("({")
+        if not base:
+            index += 1
+            continue
+        if COMMAND_SURFACE_ASSIGNMENT.match(token):
+            index += 1
+            continue
+        if base == "cmd":
+            index += 1
+            while index < len(segment) and segment[index].startswith(("/", "-")):
+                index += 1
+            continue
+        if base in COMMAND_SURFACE_WRAPPERS:
+            index += 1
+            while index < len(segment) and segment[index].startswith("-"):
+                index += 1
+            if (
+                base in COMMAND_SURFACE_WRAPPER_VALUES
+                and index < len(segment)
+                and not segment[index].startswith("-")
+            ):
+                index += 1
+            continue
+        return base, segment[index + 1 :]
+    return None, []
+
+
+def _surface_basename(token: str) -> str:
+    text = str(token).strip().strip("'\"").replace("\\", "/")
+    base = text.rsplit("/", 1)[-1].lower()
+    if base.endswith(".exe"):
+        base = base[:-4]
+    return base
+
+
 def audit_path_scan(action: ActionEnvelope, project_root: str) -> EvidenceTestimony:
-    unresolved = tuple(str(target) for target in action.target_paths if "\x00" in str(target))
+    unresolved = tuple(
+        str(target)
+        for target in action.target_paths
+        if "\x00" in str(target) or _has_unresolved_path_variable(str(target))
+    )
     if unresolved:
         return EvidenceTestimony(
             stage=EvidenceStage.PATH_SCAN,
@@ -545,6 +850,59 @@ def _channel_testimony(result: ChannelAuditResult) -> EvidenceTestimony:
     )
 
 
+def _ot_gate_testimony(result: OTGateResult) -> EvidenceTestimony:
+    if result.decision == ExecutionDecision.ALLOW:
+        disposition = EvidenceDisposition.PASS
+    elif result.reason_code == "HOLD_FOR_USER_CONFIRMATION" or result.hold_votes:
+        disposition = EvidenceDisposition.HOLD
+    else:
+        disposition = EvidenceDisposition.KILL
+
+    return EvidenceTestimony(
+        stage=EvidenceStage.OT_GATE,
+        disposition=disposition,
+        reason_code=f"OT_{result.reason_code}",
+        detail="OT Court command-proposal testimony",
+        evidence=tuple(
+            item
+            for testimony in result.testimonies
+            for item in testimony.evidence
+        ),
+        metadata={
+            "permission_level": result.permission_level.value,
+            "critical": result.critical,
+            "kill_votes": result.kill_votes,
+            "hold_votes": result.hold_votes,
+            "judge_reason_codes": tuple(
+                testimony.reason_code for testimony in result.testimonies
+            ),
+            "judge_votes": tuple(testimony.vote.value for testimony in result.testimonies),
+        },
+    )
+
+
+def _ot_gate_result_dict(result: OTGateResult) -> Dict[str, Any]:
+    return {
+        "decision": result.decision.value,
+        "reason_code": result.reason_code,
+        "permission_level": result.permission_level.value,
+        "critical": result.critical,
+        "kill_votes": result.kill_votes,
+        "hold_votes": result.hold_votes,
+        "io_executed": False,
+        "testimonies": tuple(
+            {
+                "judge": testimony.judge.value,
+                "vote": testimony.vote.value,
+                "reason_code": testimony.reason_code,
+                "critical": testimony.critical,
+                "evidence": tuple(testimony.evidence),
+            }
+            for testimony in result.testimonies
+        ),
+    }
+
+
 def _capability_precheck_testimony(
     decision: CapabilityDecision,
 ) -> EvidenceTestimony:
@@ -599,16 +957,188 @@ def _protect_testimony(decision: ProtectScanDecision) -> EvidenceTestimony:
     )
 
 
+OT_COURT_STAGES = frozenset(
+    {
+        EvidenceStage.ADMISSION,
+        EvidenceStage.OT_GATE,
+        EvidenceStage.CAPABILITY_PRECHECK,
+        EvidenceStage.PROTECT_SCAN,
+        EvidenceStage.PATCH_AUDIT,
+    }
+)
+DECODE_COURT_STAGES = frozenset(
+    {
+        EvidenceStage.CHANNEL_AUDIT,
+        EvidenceStage.COMMAND_SURFACE,
+        EvidenceStage.PATH_SCAN,
+        EvidenceStage.NETWORK_SCAN,
+        EvidenceStage.DECODE_REVIEW,
+    }
+)
+DISPOSITION_PRIORITY = (
+    EvidenceDisposition.REJECT,
+    EvidenceDisposition.KILL,
+    EvidenceDisposition.QUARANTINE,
+    EvidenceDisposition.HOLD,
+    EvidenceDisposition.PASS,
+)
+DISPOSITION_RANK = {
+    disposition: len(DISPOSITION_PRIORITY) - index
+    for index, disposition in enumerate(DISPOSITION_PRIORITY)
+}
+
+
+def _admission_testimonies(
+    admission_ticket: Optional[AdmissionTicket],
+) -> tuple[EvidenceTestimony, ...]:
+    if admission_ticket is None:
+        return ()
+    if admission_ticket.disposition == AdmissionDisposition.REJECT:
+        disposition = EvidenceDisposition.REJECT
+    elif admission_ticket.disposition == AdmissionDisposition.HOLD:
+        disposition = EvidenceDisposition.HOLD
+    else:
+        disposition = EvidenceDisposition.PASS
+    return (
+        EvidenceTestimony(
+            stage=EvidenceStage.ADMISSION,
+            disposition=disposition,
+            reason_code=admission_ticket.reason_code,
+            detail="Registry Admission testimony",
+            evidence=admission_ticket.evidence,
+        ),
+    )
+
+
+def _decision_from_testimonies(
+    *,
+    testimonies: Sequence[EvidenceTestimony],
+    admission_ticket: Optional[AdmissionTicket] = None,
+    evidence_bundle: Optional[ParallelEvidenceBundle] = None,
+    xray_transport: Optional[XrayTransportSeal] = None,
+) -> ParallelAuditDecision:
+    testimonies = tuple(testimonies)
+    ot_court = _court_verdict(EvidenceCourt.OT, testimonies)
+    decode_court = _court_verdict(EvidenceCourt.DECODE, testimonies)
+    conflict = _dual_court_conflict_testimony(ot_court, decode_court)
+    if conflict is not None:
+        testimonies = testimonies + (conflict,)
+    primary = _dual_court_primary(ot_court, decode_court)
+    certificate = _final_capability_certificate(evidence_bundle, ot_court, decode_court)
+    return ParallelAuditDecision(
+        disposition=primary.disposition,
+        reason_code=primary.reason_code,
+        primary_stage=primary.stage,
+        testimonies=testimonies,
+        admission_ticket=admission_ticket,
+        evidence_bundle=evidence_bundle,
+        xray_transport=xray_transport,
+        capability_certificate=certificate,
+        ot_court=ot_court,
+        decode_court=decode_court,
+    )
+
+
+def _court_verdict(
+    court: EvidenceCourt,
+    testimonies: Sequence[EvidenceTestimony],
+) -> CourtVerdict:
+    stages = OT_COURT_STAGES if court == EvidenceCourt.OT else DECODE_COURT_STAGES
+    court_testimonies = tuple(
+        testimony for testimony in testimonies if testimony.stage in stages
+    )
+    if not court_testimonies:
+        missing = EvidenceTestimony(
+            stage=EvidenceStage.AGGREGATOR,
+            disposition=EvidenceDisposition.HOLD,
+            reason_code=f"{court.value}_COURT_TESTIMONY_MISSING",
+            detail=f"{court.value} court has no testimony; no court may pass alone.",
+        )
+        return CourtVerdict(
+            court=court,
+            disposition=EvidenceDisposition.HOLD,
+            reason_code=missing.reason_code,
+            primary_stage=missing.stage,
+            testimonies=(missing,),
+        )
+    primary = _primary_testimony(court_testimonies)
+    return CourtVerdict(
+        court=court,
+        disposition=primary.disposition,
+        reason_code=primary.reason_code,
+        primary_stage=primary.stage,
+        testimonies=court_testimonies,
+    )
+
+
+def _dual_court_primary(
+    ot_court: CourtVerdict,
+    decode_court: CourtVerdict,
+) -> EvidenceTestimony:
+    if ot_court.passed and decode_court.passed:
+        return _primary_testimony(
+            tuple(ot_court.testimonies) + tuple(decode_court.testimonies)
+        )
+
+    courts = (ot_court, decode_court)
+    strongest = max(
+        (court.disposition for court in courts),
+        key=lambda item: DISPOSITION_RANK[item],
+    )
+    candidates = tuple(court for court in courts if court.disposition == strongest)
+    return _primary_testimony(
+        tuple(
+            testimony
+            for court in candidates
+            for testimony in court.testimonies
+            if testimony.disposition == strongest
+        )
+    )
+
+
+def _dual_court_conflict_testimony(
+    ot_court: CourtVerdict,
+    decode_court: CourtVerdict,
+) -> Optional[EvidenceTestimony]:
+    if ot_court.disposition == decode_court.disposition:
+        return None
+    if (
+        ot_court.reason_code.endswith("_COURT_TESTIMONY_MISSING")
+        or decode_court.reason_code.endswith("_COURT_TESTIMONY_MISSING")
+    ):
+        return None
+
+    strongest = max(
+        (ot_court.disposition, decode_court.disposition),
+        key=lambda item: DISPOSITION_RANK[item],
+    )
+    if DISPOSITION_RANK[strongest] < DISPOSITION_RANK[EvidenceDisposition.HOLD]:
+        strongest = EvidenceDisposition.HOLD
+
+    return EvidenceTestimony(
+        stage=EvidenceStage.AGGREGATOR,
+        disposition=strongest,
+        reason_code=f"DUAL_COURT_CONFLICT_{strongest.value}",
+        detail=(
+            "OT and decode court verdicts diverged; a looser court cannot relax "
+            "the stricter court."
+        ),
+        evidence=(
+            f"ot:{ot_court.disposition.value}:{ot_court.reason_code}",
+            f"decode:{decode_court.disposition.value}:{decode_court.reason_code}",
+        ),
+        metadata={
+            "rule": "court_disagreement_holds_or_stronger",
+            "ot_disposition": ot_court.disposition.value,
+            "decode_disposition": decode_court.disposition.value,
+        },
+    )
+
+
 def _primary_testimony(
     testimonies: Sequence[EvidenceTestimony],
 ) -> EvidenceTestimony:
-    priority = (
-        EvidenceDisposition.KILL,
-        EvidenceDisposition.QUARANTINE,
-        EvidenceDisposition.HOLD,
-        EvidenceDisposition.PASS,
-    )
-    for disposition in priority:
+    for disposition in DISPOSITION_PRIORITY:
         matches = tuple(
             testimony for testimony in testimonies if testimony.disposition == disposition
         )
@@ -622,18 +1152,37 @@ def _stage_primary(
     disposition: EvidenceDisposition,
 ) -> EvidenceTestimony:
     stage_priority = {
+        EvidenceDisposition.REJECT: (
+            EvidenceStage.ADMISSION,
+            EvidenceStage.PROTECT_SCAN,
+            EvidenceStage.PATCH_AUDIT,
+            EvidenceStage.OT_GATE,
+            EvidenceStage.CAPABILITY_PRECHECK,
+            EvidenceStage.CHANNEL_AUDIT,
+            EvidenceStage.COMMAND_SURFACE,
+            EvidenceStage.DECODE_REVIEW,
+            EvidenceStage.AGGREGATOR,
+            EvidenceStage.PATH_SCAN,
+            EvidenceStage.NETWORK_SCAN,
+        ),
         EvidenceDisposition.KILL: (
             EvidenceStage.PROTECT_SCAN,
             EvidenceStage.PATCH_AUDIT,
             EvidenceStage.CAPABILITY_PRECHECK,
+            EvidenceStage.OT_GATE,
             EvidenceStage.PATH_SCAN,
             EvidenceStage.NETWORK_SCAN,
             EvidenceStage.CHANNEL_AUDIT,
+            EvidenceStage.COMMAND_SURFACE,
+            EvidenceStage.DECODE_REVIEW,
         ),
         EvidenceDisposition.QUARANTINE: (
             EvidenceStage.CHANNEL_AUDIT,
+            EvidenceStage.COMMAND_SURFACE,
+            EvidenceStage.DECODE_REVIEW,
             EvidenceStage.PROTECT_SCAN,
             EvidenceStage.PATCH_AUDIT,
+            EvidenceStage.OT_GATE,
             EvidenceStage.CAPABILITY_PRECHECK,
             EvidenceStage.PATH_SCAN,
             EvidenceStage.NETWORK_SCAN,
@@ -641,6 +1190,9 @@ def _stage_primary(
         EvidenceDisposition.HOLD: (
             EvidenceStage.PROTECT_SCAN,
             EvidenceStage.CHANNEL_AUDIT,
+            EvidenceStage.COMMAND_SURFACE,
+            EvidenceStage.DECODE_REVIEW,
+            EvidenceStage.OT_GATE,
             EvidenceStage.CAPABILITY_PRECHECK,
             EvidenceStage.PATH_SCAN,
             EvidenceStage.NETWORK_SCAN,
@@ -648,6 +1200,8 @@ def _stage_primary(
         ),
         EvidenceDisposition.PASS: (
             EvidenceStage.CHANNEL_AUDIT,
+            EvidenceStage.COMMAND_SURFACE,
+            EvidenceStage.OT_GATE,
             EvidenceStage.CAPABILITY_PRECHECK,
             EvidenceStage.PATH_SCAN,
             EvidenceStage.NETWORK_SCAN,
@@ -662,14 +1216,14 @@ def _stage_primary(
     return testimonies[0]
 
 
-def _formal_capability_certificate(
-    bundle: ParallelEvidenceBundle,
-    primary: EvidenceTestimony,
+def _final_capability_certificate(
+    bundle: Optional[ParallelEvidenceBundle],
+    ot_court: CourtVerdict,
+    decode_court: CourtVerdict,
 ) -> Optional[CapabilityCertificate]:
-    if primary.stage == EvidenceStage.CAPABILITY_PRECHECK:
-        return bundle.capability_decision.certificate
-
-    if primary.disposition == EvidenceDisposition.PASS:
+    if bundle is None:
+        return None
+    if ot_court.passed and decode_court.passed:
         return bundle.capability_decision.certificate
 
     return None
@@ -689,8 +1243,37 @@ def _proposal_from_action(action: ActionEnvelope) -> CommandProposal:
         source_adapter=action.source_adapter,
         tool_name=action.tool_name,
         action_type=action.action_type.value,
-        raw_payload=dict(action.raw_payload),
+        raw_payload=_proposal_raw_payload(action),
     )
+
+
+def _proposal_raw_payload(action: ActionEnvelope) -> Dict[str, Any]:
+    payload = dict(action.raw_payload)
+    payload.setdefault(
+        "pub_process",
+        {
+            "actor_id": action.actor_id,
+            "action_id": action.action_id,
+            "channel_type": action.channel_type.value,
+            "cwd": action.cwd,
+            "target_paths": tuple(action.target_paths),
+            "expected_side_effects": tuple(
+                sorted(effect.value for effect in _action_effects(action))
+            ),
+            "p_enter_ts": _process_time_evidence(action),
+            "source_adapter": action.source_adapter,
+            "action_type": action.action_type.value,
+        },
+    )
+    return payload
+
+
+def _process_time_evidence(action: ActionEnvelope) -> str:
+    for key in ("created_at", "timestamp", "ts", "time", "time_ns", "p_enter_ts"):
+        value = action.raw_payload.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return action.action_id
 
 
 def _action_effects(action: ActionEnvelope) -> Set[SideEffect]:
@@ -792,8 +1375,8 @@ def _resolve_target(cwd: str, target_path: str) -> Path:
 
 
 def _is_within(path: Path, root: Path) -> bool:
-    path_text = normcase(normpath(str(path)))
-    root_text = normcase(normpath(str(root))).rstrip("\\/")
+    path_text = normcase(normpath(str(path))).casefold()
+    root_text = normcase(normpath(str(root))).rstrip("\\/").casefold()
     return (
         path_text == root_text
         or path_text.startswith(root_text + "\\")
@@ -803,6 +1386,11 @@ def _is_within(path: Path, root: Path) -> bool:
 
 def _has_path_traversal(value: str) -> bool:
     return ".." in value.replace("\\", "/").split("/")
+
+
+def _has_unresolved_path_variable(value: str) -> bool:
+    text = str(value)
+    return "$" in text or "%" in text
 
 
 def _contains_any(text: str, tokens: Sequence[str]) -> bool:

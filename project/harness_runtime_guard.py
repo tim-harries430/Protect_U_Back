@@ -177,7 +177,7 @@ class ProtectGate:
             project_root=project_root,
             source_adapter=source_adapter,
         )
-        if result.decision.disposition in BLOCKING_DISPOSITIONS:
+        if result.blocked:
             return BlockedToolResult.from_preflight(result)
         return original_tool(*tool_args, **tool_kwargs)
 
@@ -195,7 +195,7 @@ class ProtectGate:
             project_root=project_root,
             source_adapter=source_adapter,
         )
-        if result.decision.disposition in BLOCKING_DISPOSITIONS:
+        if result.blocked:
             return BlockedToolResult.from_preflight(result)
         return await original_tool(*tool_args, **tool_kwargs)
 
@@ -267,7 +267,7 @@ def audit_harness_event(
         project_root=project_root_text,
         protect_profile=profile,
     )
-    allowed = decision.disposition == EvidenceDisposition.PASS
+    allowed = decision.allows_pre_io
     return ShellPreflightResult(
         action=action,
         decision=decision,
@@ -338,7 +338,7 @@ def enforce_shell_subprocess_preflight(
     **kwargs: Any,
 ) -> ShellPreflightResult:
     result = audit_shell_subprocess(command, **kwargs)
-    if result.decision.disposition in BLOCKING_DISPOSITIONS:
+    if result.blocked:
         raise ProtectPreflightBlocked(result)
     return result
 
@@ -513,6 +513,8 @@ def _shell_command_targets(command: str) -> tuple[str, ...]:
 
 def _looks_like_target_token(token: str) -> bool:
     lowered = token.lower()
+    if lowered in {".", ".."}:
+        return True
     if lowered.startswith(("http://", "https://")):
         return True
     if "/" in token or "\\" in token:

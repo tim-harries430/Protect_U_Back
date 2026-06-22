@@ -97,7 +97,7 @@ def test_opaque_process_exec_holds_without_network_sensor():
     assert receipt.metadata["llm_visible"] is False
 
 
-def test_unknown_script_process_exec_holds_without_network_sensor():
+def test_unknown_runtime_process_exec_holds_without_network_sensor():
     session = default_kingdom_session(session_id="k3b", actor_id="agent", project_root=ROOT)
     event = ObjectTouchEvent(
         session_id="k3b",
@@ -106,16 +106,18 @@ def test_unknown_script_process_exec_holds_without_network_sensor():
         ppid=10,
         actor_id="agent",
         kind=TouchKind.PROCESS_EXEC,
-        object_ref="python.exe",
-        process_image="python.exe",
-        command_text="python script.py",
+        object_ref="custom-agent.exe",
+        process_image="custom-agent.exe",
+        command_text="custom-agent --do thing",
         cwd=ROOT,
     )
 
     receipt = receipt_for_touch(event, session)
 
     assert receipt.decision == VisibilityDecision.HOLD
-    assert receipt.reason_code == "PUB_OS_UNKNOWN_RUNTIME_HOLD"
+    # v2: an unknown runtime process is opaque execution under the fail-closed
+    # recognizer (was PUB_OS_UNKNOWN_RUNTIME_HOLD in the v1 split). Same HOLD.
+    assert receipt.reason_code == "PUB_OS_OPAQUE_EXECUTION_HOLD"
     assert "network_sensor:ABSENT" in receipt.evidence
 
 

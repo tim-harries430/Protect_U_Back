@@ -191,6 +191,7 @@ def prepare_agent_run(
         python_bin=python_bin,
         cd_status_fn=cd_status_fn,
         cc_status_fn=cc_status_fn,
+        runner_attached=True,
     )
     if admission.state != ProfileState.SUPERVISED:
         return _plan_hold(run_session, profile, admission, admission.reason_code, admission.evidence)

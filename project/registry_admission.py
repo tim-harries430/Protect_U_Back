@@ -38,6 +38,9 @@ class AdmissionTicket:
     reason_code: str
     actor_state: Optional[ActorState] = None
     admitted: bool = False
+    admission_only: bool = True
+    grants_final_pass: bool = False
+    requires_pub_aggregate_on_admit: bool = True
     can_execute: bool = False
     can_grant_permission: bool = False
     evidence: Sequence[str] = ()
@@ -57,6 +60,11 @@ class AdmissionTicket:
             object.__setattr__(self, "actor_state", ActorState(self.actor_state))
 
         object.__setattr__(self, "admitted", self.disposition == AdmissionDisposition.ADMIT)
+        object.__setattr__(self, "admission_only", True)
+        object.__setattr__(self, "grants_final_pass", False)
+        object.__setattr__(self, "requires_pub_aggregate_on_admit", True)
+        object.__setattr__(self, "can_execute", False)
+        object.__setattr__(self, "can_grant_permission", False)
         object.__setattr__(self, "evidence", tuple(str(item) for item in self.evidence))
 
     def to_dict(self) -> dict[str, Any]:
@@ -68,6 +76,9 @@ class AdmissionTicket:
             "reason_code": self.reason_code,
             "actor_state": self.actor_state.value if self.actor_state else None,
             "admitted": self.admitted,
+            "admission_only": True,
+            "grants_final_pass": False,
+            "requires_pub_aggregate_on_admit": True,
             "can_execute": False,
             "can_grant_permission": False,
             "evidence": tuple(self.evidence),
@@ -181,6 +192,14 @@ def admitted_envelopes(
     envelopes: Sequence[ChannelEnvelope],
     tickets: Sequence[AdmissionTicket],
 ) -> Sequence[ChannelEnvelope]:
+    """
+    Return envelopes that may continue into channel/PUB audit.
+
+    This is not an allowlist and must not be interpreted as execution
+    permission. Admission ADMIT only means the envelope may proceed to PUB
+    aggregate; final PASS still requires downstream audit testimony.
+    """
+
     if len(envelopes) != len(tickets):
         raise ValueError("envelopes and tickets must have the same length.")
 

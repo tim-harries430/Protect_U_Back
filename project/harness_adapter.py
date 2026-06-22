@@ -371,6 +371,8 @@ def infer_declared_scope(
         return DeclaredScope.EXTERNAL_IO
     if SideEffect.ENV_CHANGE in effects:
         return DeclaredScope.ENV_CHANGE
+    if SideEffect.WRITE in effects or SideEffect.DELETE in effects:
+        return DeclaredScope.PROJECT_WRITE
     if action_type in {AdapterActionType.FILE_WRITE, AdapterActionType.FILE_DELETE}:
         return DeclaredScope.PROJECT_WRITE
     return DeclaredScope.READ_ONLY

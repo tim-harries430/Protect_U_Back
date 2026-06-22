@@ -267,8 +267,15 @@ def _hard_sources_for_read(
     markers: List[TaintMarker] = []
 
     if SideEffect.SECRET_ACCESS in effects:
+        # Power-compression: persist a DIGEST of the secret-access command, not the
+        # raw text -- the judge accumulates taint without echoing payload into its
+        # state/ledger ("it says less"). The digest is stable, so (kind, origin_ref)
+        # dedup still works.
+        secret_ref = "secret:" + hashlib.sha256(
+            proposal.command_text.encode("utf-8", "replace")
+        ).hexdigest()[:16]
         markers.append(
-            TaintMarker(TaintTier.HARD, TaintKind.SECRET, proposal.command_text[:120], event_id)
+            TaintMarker(TaintTier.HARD, TaintKind.SECRET, secret_ref, event_id)
         )
 
     for protected in _protected_targets(proposal, policy):
@@ -548,9 +555,15 @@ class TemporalContinuityLedger:
 
 
 def _branch_of(proposal: CommandProposal) -> str:
-    raw = getattr(proposal, "raw_payload", {}) or {}
-    branch = raw.get("branch_id") if isinstance(raw, Mapping) else None
-    if branch:
-        return str(branch)
-    # Fall back to the provenance request id so one user request = one session.
-    return proposal.user_request_id or "default_branch"
+    # POWER-COMPRESSION / A4: the branch is this judge's docket key (one continuous
+    # flow = one branch, taint accumulates per branch). It MUST be a HOST-INJECTED
+    # anchor -- the hook stamps provenance ids the actor cannot set
+    # (user_request_id = transcript, parent_event_id = session). Trusting a
+    # self-reported `raw_payload["branch_id"]` let an actor open a fresh zero-taint
+    # branch and launder read->exfil. The 4th judge now reads NO agent-controllable
+    # field for branching: only host provenance here, only physical effects elsewhere.
+    return (
+        proposal.user_request_id
+        or getattr(proposal, "parent_event_id", "")
+        or "default_branch"
+    )

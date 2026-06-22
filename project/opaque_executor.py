@@ -19,10 +19,29 @@ Covenant: this reads ONLY the command surface (argv shape). It never inspects
 file contents, never traces execution. It recognizes that the box is sealed; it
 never opens the box.
 
-Scope (v0): inline-code interpreter invocations + the POSIX `eval` builtin. The
-long tail -- renamed/custom interpreters, dropped-then-run binaries, awk/sed
-programs, stdin-piped code without a flag -- is NOT fully covered here and is
-left to declaration in the threat model. See `residual_tail` note below.
+Scope (v1): inline-code interpreter invocations + the POSIX `eval` builtin (v0),
+PLUS interpreters/shells executing a SCRIPT FILE or `-m` module (`python
+build.py`, `bash deploy.sh`) and code-running package managers / task runners
+(`npm run`, `pip install`, `make`, `npx`). Rationale: the axis is "effect
+undecidable from the command surface (Rice)", and a disk referent is exactly as
+undecidable as inline code -- hashing `build.py` proves its bytes, never its
+effect. So a referent is NOT a reason to call the box modellable; it only lets a
+later autopsy hash it too. The long tail -- renamed/custom interpreters,
+dropped-then-run binaries, awk/sed programs -- is still NOT fully covered and is
+left to declaration in the threat model.
+
+Scope (v2): the recognizer is now FAIL-CLOSED. Recognizing "is this code
+execution?" by an allowlist of known interpreter NAMES is bypassable by any name
+the attacker chose -- a versioned interpreter (`python3.11`), another interpreter
+(`awk`), a local file (`./payload`), `source`/`.`, or `| bash`. So the default is
+inverted: any command-position word NOT in a small set of modellable coreutils
+(`_MODELLABLE_VERBS`) is opaque. Unknown verb -> unmodellable -> HOLD, which is
+pub's default-deny-on-missing-evidence principle instead of contradicting it.
+This trades friction (uncommon-but-benign tools now HOLD) for closing the whole
+name-evasion bypass class. The allowlist is the part to tune, not the default.
+
+This is a DECODER: it only widens what the pub core can SEE as unmodellable. It
+never decides hold/kill and never opens the box.
 """
 
 from __future__ import annotations
@@ -78,6 +97,96 @@ _SHELL_CODE_FLAG = re.compile(r"^-[a-z]*c$")
 _PWSH: frozenset[str] = frozenset({"powershell", "pwsh"})
 _PWSH_CODE_PREFIXES: tuple[str, ...] = ("-c", "-command", "-e", "-ec", "-enc", "-encodedcommand")
 
+# (v1) Package managers / task runners. Decoder table only: each maps to the
+# subcommands that EXECUTE project-defined, surface-invisible code. A query
+# subcommand (`pip list`, `npm outdated`) is not here, so it stays modellable.
+# An empty allow-set means the tool runs a recipe even with no subcommand
+# (`make`, `gradle`) -- always opaque in command position.
+_RUNNERS: dict[str, frozenset[str]] = {
+    "git": frozenset({"add", "commit", "push", "pull", "fetch", "merge", "rebase", "cherry-pick", "stash", "apply", "am", "checkout", "switch"}),
+    "npm": frozenset({"run", "run-script", "exec", "install", "i", "ci", "start", "test", "build", "rebuild"}),
+    "pnpm": frozenset({"run", "exec", "dlx", "install", "i", "start", "test", "build"}),
+    "yarn": frozenset({"run", "exec", "dlx", "install", "start", "test", "build"}),
+    "pip": frozenset({"install"}),
+    "pip3": frozenset({"install"}),
+    "pipx": frozenset({"install", "run"}),
+    "uv": frozenset({"run", "pip"}),
+    "poetry": frozenset({"run", "install", "build"}),
+    "cargo": frozenset({"run", "build", "test", "install", "bench"}),
+    "go": frozenset({"run", "build", "test", "generate", "install"}),
+    "bundle": frozenset({"exec", "install"}),
+    "jupyter": frozenset({"nbconvert", "execute", "run"}),
+    "deno": frozenset({"run"}),  # `deno eval` already matched above
+    "bun": frozenset({"run"}),
+    "make": frozenset(),
+    "gradle": frozenset(),
+    "gradlew": frozenset(),
+    "mvn": frozenset(),
+    "rake": frozenset(),
+    "docker": frozenset({"build", "run", "exec", "compose", "push", "pull", "login", "tag", "rm", "rmi", "system", "volume", "network", "container", "image"}),
+    "docker-compose": frozenset(),
+    "kubectl": frozenset({"get", "describe", "apply", "create", "delete", "patch", "replace", "edit", "scale", "rollout", "exec", "cp", "logs", "config", "port-forward"}),
+}
+
+# Tools that execute fetched/arbitrary code in any invocation that has an operand.
+_ALWAYS_RUNNERS: frozenset[str] = frozenset({"npx", "bunx", "tsx", "ts-node"})
+
+# (v2) Coreutils / verbs whose surface effect IS decidable from argv -- the ONLY
+# command-position words the recognizer treats as modellable. EVERYTHING else
+# (interpreters python*/perl*/awk, shells, source/dot, local-file execution
+# ./payload, unknown binaries) is opaque by default. Deliberately EXCLUDES every
+# interpreter, every shell, source/eval/exec and net tools (nc/socat) so a name
+# the attacker chose cannot wave itself through. This is a declared allowlist of
+# the KNOWN-SAFE, not a denylist of the known-dangerous -- tune per environment.
+_MODELLABLE_VERBS: frozenset[str] = frozenset(
+    {
+        # read / inspect (READ)
+        "cat", "head", "tail", "less", "more", "bat", "nl", "tac", "rev", "fold",
+        "grep", "egrep", "fgrep", "rg", "ag", "ack", "look",
+        "ls", "dir", "find", "tree", "stat", "file", "readlink", "realpath",
+        "wc", "sort", "uniq", "cut", "tr", "comm", "join", "paste", "column",
+        "od", "xxd", "hexdump", "strings",
+        "echo", "printf", "seq", "yes", "pwd", "basename", "dirname",
+        "date", "cal", "which", "whereis", "type", "hostname", "whoami", "id",
+        "uname", "printenv", "du", "df", "diff", "cmp",
+        "md5sum", "sha1sum", "sha256sum", "sha512sum", "cksum", "b2sum", "jq", "yq",
+        # write / modify (modeled)
+        "touch", "mkdir", "tee", "cp", "copy", "mv", "move", "truncate",
+        "mktemp",
+        # delete (modeled; own KILL/HOLD path)
+        "rm", "rmdir", "unlink",
+        # in-place text edit (modeled as WRITE)
+        "sed",
+        # version control (subcommands modeled)
+        "git",
+        # network (modeled as NETWORK; own path)
+        "curl", "wget",
+        # privilege (modeled)
+        "chmod", "chown",
+        # NOTE: install / shred / ln / chgrp are deliberately EXCLUDED. They are
+        # surface-equivalent to modeled verbs (install~cp write, shred~rm delete,
+        # ln~write, chgrp~chown privilege) but NO effect layer (codex_bash_guard
+        # verb branch, ot_gate, capability) models them -> they would be judged
+        # READ, silently allowed, and slip the self-protection wall (red-team B1).
+        # Absent an effect model they fail-closed to opaque -> HOLD. Re-add ONLY
+        # together with an effect model.
+        # PowerShell cmdlets whose effect is decidable -- MUST mirror the modellable
+        # surface in parallel_audit.MODELLABLE_COMMAND_WORDS, or the v2 fail-closed
+        # default over-blocks plain PowerShell I/O on Windows. (`:` stays excluded:
+        # `: > file` is a truncate-via-redirect evasion that should read as opaque.)
+        "get-content", "set-content", "add-content", "clear-content",
+        "remove-item", "copy-item", "move-item", "new-item", "out-file",
+        "select-string", "invoke-webrequest", "iwr", "icacls",
+        # benign builtins / no-ops
+        "true", "false", "test", "[", "cd", "export", "set", "unset", "read",
+        "exit", "return", "alias", "unalias", "history", "clear", "sleep",
+        "wait", "umask", "ulimit", "pushd", "popd", "dirs",
+    }
+)
+_DIRECT_SCRIPT_EXTS: frozenset[str] = frozenset(
+    {".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd", ".py", ".js", ".mjs", ".cjs", ".ts"}
+)
+
 
 def _norm(token: str) -> str:
     """Basename, lowercased, .exe stripped, surrounding quotes removed."""
@@ -122,9 +231,22 @@ def _command_word(segment: list[str]) -> tuple[str | None, list[str]]:
     i, n = 0, len(segment)
     while i < n:
         tok = segment[i]
-        base = _norm(tok)
+        # Strip subshell / group punctuation glued to the command word: `(cd`, `{cmd`.
+        base = _norm(tok).lstrip("({")
+        if not base:
+            i += 1
+            continue
         if _ASSIGNMENT.match(tok):
             i += 1
+            continue
+        if base == "cmd":
+            # Windows cmd.exe `/c`|`/k` <inner>: the inner command is the real
+            # executor. Skip cmd and its slash/dash options and judge the inner,
+            # so `cmd /c dir` reads through to `dir` (modellable) while
+            # `cmd /c python3.11 -c ...` reads through to the opaque interpreter.
+            i += 1
+            while i < n and segment[i].startswith(("/", "-")):
+                i += 1
             continue
         if base in _WRAPPERS:
             i += 1
@@ -135,6 +257,16 @@ def _command_word(segment: list[str]) -> tuple[str | None, list[str]]:
             continue
         return base, segment[i + 1 :]
     return None, []
+
+
+def _first_operand(rest: list[str]) -> str | None:
+    """First non-option token after the command word: a script path, module, or
+    subcommand. Lets us decide an interpreter is running a FILE (not just `-c`)
+    or a runner is invoking a code subcommand. Pure surface read."""
+    for tok in rest:
+        if tok and not tok.startswith("-"):
+            return tok
+    return None
 
 
 def is_opaque_executor(command_text: str) -> tuple[bool, tuple[str, ...]]:
@@ -154,6 +286,9 @@ def is_opaque_executor(command_text: str) -> tuple[bool, tuple[str, ...]]:
         if base is None:
             continue
 
+        if any(base.endswith(ext) for ext in _DIRECT_SCRIPT_EXTS):
+            return True, (f"interpreter:{base}", "code_flag:script")
+
         # POSIX `eval` builtin: executes a string assembled at runtime.
         if base == "eval":
             return True, ("interpreter:eval", "code_flag:builtin")
@@ -169,17 +304,68 @@ def is_opaque_executor(command_text: str) -> tuple[bool, tuple[str, ...]]:
                     return True, (f"interpreter:{base}", f"code_flag:{tok}")
             if any(tok == "-" for tok in rest):  # code from stdin: `python -`
                 return True, (f"interpreter:{base}", "code_flag:stdin(-)")
+            if not rest:  # bare interpreter in command position: a REPL, or it
+                # executes code piped to its stdin (`cat x.py | python3`). The
+                # effect is undecidable from argv -- same axis as `-c`. (A known
+                # interpreter is exempt from the fail-closed default below because
+                # it is in _INTERP_FLAGS, so the bare form must be caught here.)
+                return True, (f"interpreter:{base}", "code_flag:stdin")
+            # (v1) not inline, but executing a -m module or a script FILE. The
+            # referent is hashable, its EFFECT is still undecidable from the
+            # surface (Rice) -- same axis as -c. `python build.py`, `node app.js`.
+            # A bare `python --version` (no operand, no -m) stays modellable.
+            if "-m" in rest or "--module" in rest:
+                return True, (f"interpreter:{base}", "code_flag:-m")
+            if _first_operand(rest) is not None:
+                return True, (f"interpreter:{base}", "code_flag:script")
 
         if base in _SHELLS:
             for tok in rest:
                 if tok == "-" or _SHELL_CODE_FLAG.match(tok):
                     return True, (f"interpreter:{base}", f"code_flag:{tok}")
+            # (v1) shell executing a script FILE: `bash deploy.sh`, `sh setup`
+            if _first_operand(rest) is not None:
+                return True, (f"interpreter:{base}", "code_flag:script")
 
         if base in _PWSH:
             for tok in rest:
                 low = tok.lower()
                 if any(low.startswith(prefix) for prefix in _PWSH_CODE_PREFIXES):
                     return True, (f"interpreter:{base}", f"code_flag:{low}")
+            # (v1) powershell running a .ps1 script file
+            if _first_operand(rest) is not None:
+                return True, (f"interpreter:{base}", "code_flag:script")
+
+        # (v1) package managers / task runners whose subcommand executes
+        # project-defined, surface-invisible code.
+        if base in _ALWAYS_RUNNERS and _first_operand(rest) is not None:
+            return True, (f"runner:{base}", "subcommand:exec")
+        if base in _RUNNERS:
+            allowed = _RUNNERS[base]
+            sub = _first_operand(rest)
+            if not allowed:  # runs a recipe even with no subcommand (make, gradle)
+                return True, (f"runner:{base}", f"subcommand:{_norm(sub) if sub else '<default>'}")
+            if sub is not None and _norm(sub) in allowed:
+                return True, (f"runner:{base}", f"subcommand:{_norm(sub)}")
+
+        # (v2) Fail-closed default: a command-position word whose effect we cannot
+        # model is opaque -- the beast must SEE it (HOLD), never wave it through as
+        # a silent READ. Flips the default from "unknown name -> PASS"
+        # (default-ALLOW: the bypass class python3.11 / awk / ./payload / source /
+        # `| bash`) to "unknown -> unmodellable -> HOLD" (default-DENY, pub's
+        # actual principle). Modellable coreutils stay clear; so do the benign
+        # forms of KNOWN tool families (`python --version`, `pip list`, `npm
+        # outdated`) -- they already fell through their own blocks above, so we
+        # exempt the family rather than re-hold them. Shells are NOT exempt: a bare
+        # or piped shell (`cat x | bash`) has no surface code and is opaque.
+        if (
+            base not in _MODELLABLE_VERBS
+            and base not in _INTERP_FLAGS
+            and base not in _RUNNERS
+            and base not in _ALWAYS_RUNNERS
+            and base not in _PWSH
+        ):
+            return True, (f"executor:{base}", "code_flag:unmodellable")
 
     return False, ()
 
@@ -189,6 +375,12 @@ def opaque_marker(command_text: str) -> str | None:
     matched, evidence = is_opaque_executor(command_text)
     if not matched:
         return None
-    interp = next((e.split(":", 1)[1] for e in evidence if e.startswith("interpreter:")), "?")
-    flag = next((e.split(":", 1)[1] for e in evidence if e.startswith("code_flag:")), "?")
+    interp = next(
+        (e.split(":", 1)[1] for e in evidence if e.startswith(("interpreter:", "runner:", "executor:"))),
+        "?",
+    )
+    flag = next(
+        (e.split(":", 1)[1] for e in evidence if e.startswith(("code_flag:", "subcommand:"))),
+        "?",
+    )
     return f"{interp}:{flag}"

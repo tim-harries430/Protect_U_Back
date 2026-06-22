@@ -73,11 +73,13 @@ class ProfileReceipt:
 class AgentRuntimeAdmission:
     active_profile: ProfileName | str
     receipt: ProfileReceipt
+    runner_attached: bool = False
     can_execute: bool = False
     can_grant_permission: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "active_profile", normalize_profile_name(self.active_profile))
+        object.__setattr__(self, "runner_attached", bool(self.runner_attached))
         object.__setattr__(self, "can_execute", False)
         object.__setattr__(self, "can_grant_permission", False)
 
@@ -87,12 +89,16 @@ class AgentRuntimeAdmission:
             return ProfileState.HOLD
         if not self.receipt.supervised:
             return ProfileState.HOLD
+        if not self.runner_attached:
+            return ProfileState.HOLD
         return ProfileState.SUPERVISED
 
     @property
     def reason_code(self) -> str:
         if self.receipt.profile != self.active_profile:
             return "AGENT_RUNTIME_PROFILE_MISMATCH"
+        if self.receipt.supervised and not self.runner_attached:
+            return "AGENT_RUNTIME_UNMANAGED"
         if self.state == ProfileState.SUPERVISED:
             return "AGENT_RUNTIME_SUPERVISED"
         return self.receipt.reason_code
@@ -104,6 +110,8 @@ class AgentRuntimeAdmission:
                 f"active_profile:{self.active_profile.value}",
                 f"receipt_profile:{self.receipt.profile.value}",
             )
+        if self.receipt.supervised and not self.runner_attached:
+            return tuple(self.receipt.evidence) + ("runner:not_attached", "connected_claim:denied")
         return tuple(self.receipt.evidence)
 
     def to_dict(self) -> dict[str, Any]:
@@ -112,6 +120,7 @@ class AgentRuntimeAdmission:
             "state": self.state.value,
             "reason_code": self.reason_code,
             "evidence": tuple(self.evidence),
+            "runner_attached": self.runner_attached,
             "receipt": self.receipt.to_dict(),
             "can_execute": False,
             "can_grant_permission": False,
@@ -214,6 +223,7 @@ def check_agent_runtime(
     cc_status_fn: Callable[..., Mapping[str, Any]] | None = None,
     codex_status_fn: Callable[..., Mapping[str, Any]] | None = None,
     claude_status_fn: Callable[..., Mapping[str, Any]] | None = None,
+    runner_attached: bool = False,
 ) -> AgentRuntimeAdmission:
     profile = normalize_profile_name(active_profile)
     if profile == ProfileName.CD:
@@ -230,7 +240,7 @@ def check_agent_runtime(
             python_bin=python_bin,
             status_fn=cc_status_fn or claude_status_fn,
         )
-    return AgentRuntimeAdmission(profile, receipt)
+    return AgentRuntimeAdmission(profile, receipt, runner_attached=runner_attached)
 
 
 def check_kingdom_supervision(
@@ -246,6 +256,7 @@ def check_kingdom_supervision(
     cc_status_fn: Callable[..., Mapping[str, Any]] | None = None,
     codex_status_fn: Callable[..., Mapping[str, Any]] | None = None,
     claude_status_fn: Callable[..., Mapping[str, Any]] | None = None,
+    runner_attached: bool = False,
 ) -> AgentRuntimeAdmission:
     return check_agent_runtime(
         active_profile,
@@ -259,4 +270,5 @@ def check_kingdom_supervision(
         cc_status_fn=cc_status_fn,
         codex_status_fn=codex_status_fn,
         claude_status_fn=claude_status_fn,
+        runner_attached=runner_attached,
     )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import math
 import os
@@ -12,8 +13,23 @@ from pathlib import Path
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Mapping, Sequence
 
+from access_equation import (
+    AccessCurrent,
+    AccessEquationInput,
+    AccessWindow,
+    BoundaryMetric,
+    ObservationMask,
+    ObservationState,
+    XrayObjectState,
+    omega_access,
+)
+from access_time_grid import (
+    TIME_GRID_SCHEMA,
+    TimeGridCell,
+    TimeGridSpec,
+    build_time_grid_trace,
+)
 from ot_gate import CommandProposal, SideEffect
-from opaque_executor import opaque_marker
 from safe_path import safe_resolve
 
 
@@ -21,6 +37,7 @@ DEFAULT_MAX_HASH_BYTES = 1_000_000
 DEFAULT_HBAR_PHI = 1.0
 DEFAULT_FIELD_WEIGHT_TAU = 0.5
 DEFAULT_FIELD_SHIFT_INVESTIGATION_THRESHOLD = 0.15
+ACCESS_WITNESS_SCHEMA = "omega_access_witness_v0"
 SENSITIVE_PATH_MARKERS = (
     ".env",
     ".phi",
@@ -33,6 +50,27 @@ SENSITIVE_PATH_MARKERS = (
     "ot_gate.py",
     "secret",
     "token",
+    # (v1) governance / authority surfaces -- editing these shifts the agent's
+    # own rules (policy prompts, guardrails, benchmark definitions, tool
+    # schemas). Declared, not heuristic: tune this list to your project layout.
+    # The eye only flags the path as a protected surface; the core HOLDs.
+    "system_policy",
+    "system_prompt",
+    "agent_policy",
+    "guardrail_policy",
+    "benchmark.yaml",
+    "benchmark.yml",
+    "tool_schema",
+)
+
+# (A5 little-brother) directory membership: any file UNDER one of these dirs is
+# sensitive regardless of its filename -- closes half of the "rename within a
+# secret dir evades the path-string marker" gap. Structural (path PARTS, not
+# substring): `mysecrets/` does NOT match `secrets`, but `secrets/anything` does.
+# Not exhaustive by design; content-bearing secrets elsewhere still need content
+# inspection (the other half of A5).
+SENSITIVE_DIR_NAMES = frozenset(
+    {".ssh", ".gnupg", ".aws", ".kube", ".docker", "secrets", "credentials"}
 )
 
 
@@ -467,6 +505,63 @@ def compare_transition_xray(
     )
 
 
+def build_transition_access_witness(
+    pair: TransitionXrayPair,
+    proposal: CommandProposal,
+) -> dict[str, Any]:
+    access_input = _access_input_from_transition_pair(pair, proposal)
+    result = omega_access(access_input)
+    payload: dict[str, Any] = {
+        "schema": ACCESS_WITNESS_SCHEMA,
+        "operator": "omega_access",
+        "state": result.state.value,
+        "process_id": result.process_id,
+        "equation_applied": result.equation_applied,
+        "minimum_action": result.minimum_action,
+        "requires_hold": result.requires_hold,
+        "residual_count": len(result.residuals),
+        "explained_count": len(result.explained_residuals),
+        "hold_reasons": tuple(result.hold_reasons),
+        "residual_types": tuple(
+            sorted({str(residual.residual_type) for residual in result.residuals})
+        ),
+        "residual_components": tuple(
+            sorted({str(residual.component) for residual in result.residuals})
+        ),
+        "observation_state": access_input.observation.state.value,
+        "observation_blind_spots": tuple(access_input.observation.blind_spots),
+        "metadata_token_count": len(access_input.metadata_change_tokens),
+        "testimony_only": True,
+    }
+    payload["witness_hash"] = _sha256_canonical(payload)
+    return payload
+
+
+def transition_access_witness_evidence(witness: Mapping[str, Any] | None) -> tuple[str, ...]:
+    if not witness:
+        return ()
+    evidence = [
+        f"omega_access.schema:{witness.get('schema')}",
+        f"omega_access.state:{witness.get('state')}",
+        f"omega_access.equation_applied:{str(bool(witness.get('equation_applied'))).lower()}",
+        f"omega_access.minimum_action:{witness.get('minimum_action')}",
+        f"omega_access.requires_hold:{str(bool(witness.get('requires_hold'))).lower()}",
+        f"omega_access.residual_count:{witness.get('residual_count')}",
+        f"omega_access.explained_count:{witness.get('explained_count')}",
+        f"omega_access.observation_state:{witness.get('observation_state')}",
+        f"omega_access.metadata_token_count:{witness.get('metadata_token_count')}",
+    ]
+    for reason in witness.get("hold_reasons", ()) or ():
+        evidence.append(f"omega_access.hold_reason:{reason}")
+    for residual_type in witness.get("residual_types", ()) or ():
+        evidence.append(f"omega_access.residual_type:{residual_type}")
+    for component in witness.get("residual_components", ()) or ():
+        evidence.append(f"omega_access.residual_component:{component}")
+    if witness.get("witness_hash"):
+        evidence.append(f"omega_access.witness_hash:{witness.get('witness_hash')}")
+    return tuple(str(item) for item in evidence)
+
+
 def _proposal_piece(proposal: CommandProposal) -> XrayPiece:
     side_effects = tuple(sorted(effect.value for effect in proposal.expected_side_effects))
     payload = {
@@ -482,19 +577,6 @@ def _proposal_piece(proposal: CommandProposal) -> XrayPiece:
         "command_length": len(proposal.command_text),
         "raw_payload_sha256": _sha256_canonical(proposal.raw_payload),
     }
-    # Decidable, surface-only blindspot: a shell command that invokes an inline-
-    # code interpreter (python -c, sh -c, eval, ...) carries a Turing-complete
-    # payload whose effects are undecidable from the command text (Rice). We
-    # cannot model what it does; we mark THAT we cannot, so downstream reports
-    # UNKNOWN instead of a false CLEAR. Only real shell execution qualifies --
-    # never Write/Edit (whose content is data, not an executed argv).
-    if str(proposal.tool_name or "").strip().lower() == "bash" or str(
-        proposal.action_type or ""
-    ).strip().lower() in {"bash", "shell"}:
-        marker = opaque_marker(proposal.command_text)
-        if marker is not None:
-            payload["effect_modellable"] = False
-            payload["opaque_executor"] = marker
     return XrayPiece(
         kind="registered_action",
         ref=proposal.proposal_id,
@@ -600,6 +682,31 @@ def _skill_responsibility_piece(
     )
 
 
+def _is_abs_any(raw: str) -> bool:
+    # Absolute in EITHER OS convention -- a command can carry a Windows path
+    # (C:\..., \\unc) under a POSIX runtime, or a /posix path under Windows.
+    text = str(raw).strip().strip("'\"")
+    return PureWindowsPath(text).is_absolute() or PurePosixPath(text).is_absolute()
+
+
+def _lex_norm(value: str) -> str:
+    return str(value).strip().strip("'\"").replace("\\", "/").rstrip("/").lower()
+
+
+def _lexically_within_boundary(raw_ref: str, cwd: str) -> bool:
+    # Decide the boundary on the RAW target before any cwd-join. A relative path
+    # resolves under cwd (in-boundary). An absolute path is in-boundary only if
+    # it is lexically under the project root -- so a Windows path under a POSIX
+    # runtime is not mis-joined INTO the root and mistaken inside. (Symlink
+    # escapes are a separate axis; `..` traversal is caught by protect_scan.)
+    raw = str(raw_ref).strip().strip("'\"")
+    if not _is_abs_any(raw):
+        return True
+    target = _lex_norm(raw)
+    boundary = _lex_norm(cwd)
+    return target == boundary or target.startswith(boundary + "/")
+
+
 def _path_piece(
     target: str | Path,
     *,
@@ -607,6 +714,35 @@ def _path_piece(
     max_file_bytes: int,
 ) -> XrayPiece:
     raw_ref = str(target)
+    # (v1) Boundary decided LEXICALLY on the raw target, BEFORE any cwd-join, so
+    # a Windows-absolute path under a POSIX runtime (the WSL probe) is not
+    # mis-joined INTO the project root and mistaken for in-boundary. Outside the
+    # root the gate has no observation authority -> exists=None makes
+    # _piece_blindspot fire and the core's OBSERVATION_BLINDSPOT holds it for
+    # review. Fires whether or not the external file exists; the ATTEMPT to
+    # leave the boundary is the signal. A pure decoder note -- the core decides.
+    if not _lexically_within_boundary(raw_ref, str(cwd)):
+        # Outside the project root the gate has no observation authority. Mark a
+        # blindspot the core HOLDs (exists=True + sha256=None -> _piece_blindspot
+        # option 2), WITHOUT claiming "unobserved" (exists=None). exists=None
+        # drives the potential field to UNKNOWN, which the transport seal reads
+        # as a SUBSTITUTION and escalates to QUARANTINE -- wrong verdict and
+        # wrong reason for a benign external read. We are declining to vouch for
+        # an out-of-boundary referent, not reporting an object substitution.
+        return XrayPiece(
+            kind="target_path",
+            ref=raw_ref,
+            exists=True,
+            type="out_of_boundary",
+            sha256=None,
+            details={
+                "input_ref": raw_ref,
+                "hash_limit_bytes": max_file_bytes,
+                "boundary_root": str(cwd),
+                "observation_boundary": "outside_project_root",
+                "hash_status": "skipped_out_of_boundary",
+            },
+        )
     path = Path(target)
     if not path.is_absolute():
         path = Path(cwd) / path
@@ -754,6 +890,13 @@ def _path_fingerprint(
         archive_details = _archive_entry_details(raw_path)
         if archive_details:
             details.update(archive_details)
+        ads_streams = _ads_fingerprint(raw_path)
+        if ads_streams:
+            # T1564.004: an alternate data stream (file:stream) is invisible to the
+            # MAIN-stream sha256, and its only side-effect (an mtime bump) is erased
+            # by a timestomp. Folding the stream inventory into the piece moves
+            # piece_hash, so adding/changing a stream surfaces as a mutation -> HOLD.
+            details["ads_streams"] = ads_streams
         return {
             "input_ref": raw_ref,
             "resolved": str(resolved),
@@ -1059,8 +1202,6 @@ def _piece_tags(piece: XrayPiece) -> tuple[str, ...]:
             SideEffect.AUDIT_CHANGE.value,
         } & set(effects):
             tags.append("high_pressure_effect")
-        if piece.details.get("effect_modellable") is False:
-            tags.append("opaque_executor")
         return tuple(tags)
 
     if piece.kind == "target_path":
@@ -1197,7 +1338,17 @@ def _mentions_sensitive_marker(piece: XrayPiece) -> bool:
             str(piece.details.get("resolved", "")),
         )
     ).lower()
-    return any(marker in haystack for marker in SENSITIVE_PATH_MARKERS)
+    if any(marker in haystack for marker in SENSITIVE_PATH_MARKERS):
+        return True
+    return _under_sensitive_dir(piece)
+
+
+def _under_sensitive_dir(piece: XrayPiece) -> bool:
+    # A5 little-brother: flag a file by the secret DIRECTORY it lives in, by path
+    # membership (parent parts), so renaming the file inside it does not evade.
+    resolved = str(piece.details.get("resolved", "") or piece.ref)
+    parts = [part.lower() for part in resolved.replace("\\", "/").split("/") if part]
+    return any(part in SENSITIVE_DIR_NAMES for part in parts[:-1])
 
 
 def _finding_details(
@@ -1209,7 +1360,7 @@ def _finding_details(
     pressure_shift = None
     if before_pressure is not None and after_pressure is not None:
         pressure_shift = round(after_pressure - before_pressure, 6)
-    return {
+    details = {
         "before_pressure": before_pressure,
         "after_pressure": after_pressure,
         "pressure_shift": pressure_shift,
@@ -1219,6 +1370,299 @@ def _finding_details(
         "before_tags": _stored_piece_tags(before),
         "after_tags": _stored_piece_tags(after),
     }
+    time_grid = _time_grid_details(before, after)
+    if time_grid is not None:
+        details["time_grid"] = time_grid
+    return details
+
+
+def _time_grid_details(
+    before: XrayPiece | None,
+    after: XrayPiece | None,
+) -> dict[str, Any] | None:
+    if (
+        before is None
+        or after is None
+        or before.kind != "target_path"
+        or after.kind != "target_path"
+    ):
+        return None
+    spec = TimeGridSpec(enter_ts_ns=0, exit_ts_ns=1, step_ns=1)
+    trace = build_time_grid_trace(
+        spec=spec,
+        cells=(
+            _time_grid_cell_from_piece(before, index=0, expected_ts_ns=0),
+            _time_grid_cell_from_piece(after, index=1, expected_ts_ns=1),
+        ),
+        object_ref=before.key,
+        details={"source": "transition_xray_pair"},
+    )
+    return {
+        "schema": TIME_GRID_SCHEMA,
+        "object_ref": trace.object_ref,
+        "requires_hold": trace.requires_hold,
+        "projection_components": dict(trace.projection_components),
+        "findings": trace.findings,
+    }
+
+
+def _time_grid_cell_from_piece(
+    piece: XrayPiece,
+    *,
+    index: int,
+    expected_ts_ns: int,
+) -> TimeGridCell:
+    details = piece.details if isinstance(piece.details, Mapping) else {}
+    return TimeGridCell(
+        index=index,
+        expected_ts_ns=expected_ts_ns,
+        sampled_at_ns=expected_ts_ns,
+        metadata_vector_hash=_piece_metadata_vector_hash(piece),
+        mtime_ns=_int_or_none(details.get("mtime_ns")),
+        os_ctime_ns=_int_or_none(details.get("ctime_ns")),
+        os_ctime_semantics=_str_or_none(details.get("os_ctime_semantics")),
+        file_id=_str_or_none(details.get("file_id")),
+        nlink=_int_or_none(details.get("nlink")),
+        resolved_path=_piece_resolved_path(piece),
+        details={
+            "piece_key": piece.key,
+            "hash_status": details.get("hash_status"),
+            "physical_observation": details.get("physical_observation"),
+        },
+    )
+
+
+def _piece_metadata_vector_hash(piece: XrayPiece) -> str:
+    details = piece.details if isinstance(piece.details, Mapping) else {}
+    payload = {
+        "exists": piece.exists,
+        "type": piece.type,
+        "size": piece.size,
+        "sha256": piece.sha256,
+        "raw_path": details.get("raw_path"),
+        "resolved_path": _piece_resolved_path(piece),
+        "file_id": details.get("file_id"),
+        "inode": details.get("inode"),
+        "device_id": details.get("device_id"),
+        "nlink": details.get("nlink"),
+        "mtime_ns": details.get("mtime_ns"),
+        "ctime_ns": details.get("ctime_ns"),
+        "os_ctime_semantics": details.get("os_ctime_semantics"),
+        "mode": details.get("mode"),
+        "symlink_target": details.get("symlink_target"),
+    }
+    return _sha256_canonical(payload)
+
+
+def _access_input_from_transition_pair(
+    pair: TransitionXrayPair,
+    proposal: CommandProposal,
+) -> AccessEquationInput:
+    enter_states = tuple(
+        _xray_object_state_from_piece(piece) for piece in _target_path_pieces(pair.enter)
+    )
+    exit_states = tuple(
+        _xray_object_state_from_piece(piece) for piece in _target_path_pieces(pair.exit)
+    )
+    all_pieces = (*_target_path_pieces(pair.enter), *_target_path_pieces(pair.exit))
+    target_refs = tuple(sorted({piece.key for piece in all_pieces}))
+    current = AccessCurrent(
+        process_id=proposal.proposal_id,
+        agency=tuple(item for item in (proposal.actor_id,) if item),
+        surface=tuple(
+            item
+            for item in (
+                proposal.source_adapter,
+                proposal.tool_name,
+                proposal.action_type,
+                proposal.declared_scope.value,
+            )
+            if item
+        ),
+        window=AccessWindow(
+            enter_ts_ns=0,
+            exit_ts_ns=1,
+            order_token=pair.pair_hash,
+            details={
+                "enter_hash": pair.enter.frame_hash,
+                "exit_hash": pair.exit.frame_hash,
+            },
+        ),
+        effects=tuple(sorted(effect.value for effect in proposal.expected_side_effects)),
+        target_refs=target_refs,
+        source_adapter=proposal.source_adapter,
+        tool_name=proposal.tool_name,
+        proposal_id=proposal.proposal_id,
+        details={
+            "action_type": proposal.action_type,
+            "command_sha256": _sha256_text(proposal.command_text),
+        },
+    )
+    return AccessEquationInput(
+        process_id=proposal.proposal_id,
+        object_states=exit_states,
+        enter_object_states=enter_states,
+        exit_object_states=exit_states,
+        currents=(current,),
+        boundary=_boundary_metric_from_pieces(proposal, all_pieces),
+        auth=None,
+        observation=_observation_mask_from_pieces(all_pieces),
+        metadata_change_tokens=_metadata_change_tokens(pair.findings),
+        details={
+            "source": "transition_xray_pair",
+            "pair_hash": pair.pair_hash,
+            "mutation_state": pair.mutation_state.value,
+        },
+    )
+
+
+def _target_path_pieces(frame: TransitionXrayFrame) -> tuple[XrayPiece, ...]:
+    return tuple(piece for piece in frame.pieces if piece.kind == "target_path")
+
+
+def _xray_object_state_from_piece(piece: XrayPiece) -> XrayObjectState:
+    details = piece.details if isinstance(piece.details, Mapping) else {}
+    return XrayObjectState(
+        object_ref=piece.key,
+        exists=piece.exists,
+        object_type=piece.type,
+        raw_path=_str_or_none(details.get("raw_path") or details.get("input_ref")),
+        resolved_path=_piece_resolved_path(piece),
+        boundary_root=_str_or_none(details.get("boundary_root")),
+        size=piece.size,
+        content_sha256=piece.sha256,
+        metadata_sha256=_piece_metadata_vector_hash(piece),
+        file_id=_str_or_none(details.get("file_id")),
+        inode=_int_or_none(details.get("inode")),
+        device_id=_str_or_none(details.get("device_id")),
+        nlink=_int_or_none(details.get("nlink")),
+        mtime_ns=_int_or_none(details.get("mtime_ns")),
+        ctime_ns=_int_or_none(details.get("ctime_ns")),
+        symlink_target=_str_or_none(details.get("symlink_target")),
+        mode=_str_or_none(details.get("mode")),
+        details={
+            "hash_status": details.get("hash_status"),
+            "observation_boundary": details.get("observation_boundary"),
+            "physical_observation": details.get("physical_observation"),
+            "piece_pressure": details.get("piece_pressure"),
+            "xray_tags": tuple(details.get("xray_tags", ()) or ()),
+        },
+    )
+
+
+def _boundary_metric_from_pieces(
+    proposal: CommandProposal,
+    pieces: Sequence[XrayPiece],
+) -> BoundaryMetric:
+    contained: list[str] = []
+    escaped: list[str] = []
+    aliases: list[str] = []
+    for piece in pieces:
+        ref = _piece_resolved_path(piece) or piece.ref
+        details = piece.details if isinstance(piece.details, Mapping) else {}
+        if (
+            piece.type == "out_of_boundary"
+            or details.get("observation_boundary") == "outside_project_root"
+        ):
+            escaped.append(ref)
+        else:
+            contained.append(ref)
+        nlink = _int_or_none(details.get("nlink"))
+        if nlink is not None and nlink > 1:
+            aliases.append(ref)
+    return BoundaryMetric(
+        boundary_id="transition_xray_project_boundary",
+        root=str(proposal.cwd),
+        scope=proposal.declared_scope.value,
+        contained_refs=tuple(sorted(set(contained))),
+        escaped_refs=tuple(sorted(set(escaped))),
+        alias_refs=tuple(sorted(set(aliases))),
+        details={"source": "transition_xray_pair"},
+    )
+
+
+def _observation_mask_from_pieces(pieces: Sequence[XrayPiece]) -> ObservationMask:
+    blind_spots = tuple(sorted({piece.key for piece in pieces if _piece_blindspot(piece)}))
+    observed_fields = (
+        "exists",
+        "metadata_vector_hash",
+        "mtime_ns",
+        "os_ctime_ns",
+        "os_ctime_semantics",
+        "file_id",
+        "nlink",
+        "resolved_path",
+    )
+    return ObservationMask(
+        ObservationState.PARTIAL if blind_spots else ObservationState.COMPLETE,
+        observed_fields=observed_fields,
+        blind_spots=blind_spots,
+        confidence=0.5 if blind_spots else 1.0,
+        details={
+            "source": "transition_xray_pair",
+            "target_piece_count": len(tuple(pieces)),
+            "missing_files_are_observed_absence": True,
+        },
+    )
+
+
+def _metadata_change_tokens(
+    findings: Sequence[MutationFinding],
+) -> tuple[dict[str, Any], ...]:
+    tokens: list[dict[str, Any]] = []
+    for finding in findings:
+        time_grid = finding.details.get("time_grid")
+        if not isinstance(time_grid, Mapping):
+            continue
+        for item in time_grid.get("findings", ()) or ():
+            if not isinstance(item, Mapping):
+                continue
+            tokens.append(
+                {
+                    "changed": True,
+                    "subject": finding.piece_key,
+                    "semantics": item.get("component"),
+                    "time_grid_type": item.get("type"),
+                    "source_finding": finding.finding_type,
+                    "severity": item.get("severity"),
+                }
+            )
+    return tuple(tokens)
+
+
+def _piece_blindspot(piece: XrayPiece) -> bool:
+    details = piece.details if isinstance(piece.details, Mapping) else {}
+    if piece.exists is None:
+        return True
+    if piece.kind == "target_path" and piece.exists is True and piece.sha256 is None:
+        return True
+    return hash_unavailable(details)
+
+
+def _piece_resolved_path(piece: XrayPiece) -> str | None:
+    details = piece.details if isinstance(piece.details, Mapping) else {}
+    return _str_or_none(
+        details.get("resolved_path")
+        or details.get("resolved")
+        or details.get("input_ref")
+        or piece.ref
+    )
+
+
+def _int_or_none(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _str_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return text if text else None
 
 
 def _continuity_state_from_mutation(state: MutationState) -> ContinuityState:
@@ -1423,33 +1867,204 @@ def _os_ctime_semantics() -> str:
     return "unix_metadata_change_time"
 
 
+# ZIP local-file-header / central-directory / end-of-central-directory magic.
+# Office docs (.docx/.xlsx/.pptx), wheels (.whl), jars (.jar), eggs, apks and
+# skill packages are ALL ZIP containers, and a plain .zip can be renamed to any
+# suffix. Archive recognition is anchored on these unforgeable header bytes, never
+# on the producer-chosen extension -- renaming evil.zip -> evil.whl must not blind
+# CONTAINER_ESCAPE. (Red-team A1: trust the physical bytes, not the name.)
+_ZIP_MAGICS = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
+# Bomb / resource guards -- scanning attacker-supplied archives must terminate and
+# must not be coaxed into unbounded memory by a deeply nested or hugely-expanding
+# container. On any limit we report a blindspot status (HOLD), never a silent pass.
+_ARCHIVE_MAX_ENTRIES = 8192
+_ARCHIVE_MAX_TOTAL_BYTES = 512 * 1024 * 1024
+_ARCHIVE_MAX_RATIO = 300
+_ARCHIVE_MAX_DEPTH = 3
+_ARCHIVE_NESTED_MAX_BYTES = 32 * 1024 * 1024
+_ARCHIVE_ENTRY_MAP_CAP = 256
+
+
+def _is_zip_magic(header: bytes) -> bool:
+    return any(header.startswith(magic) for magic in _ZIP_MAGICS)
+
+
+def _sniff_is_zip(path: Path) -> bool:
+    try:
+        with open(path, "rb") as handle:
+            return _is_zip_magic(handle.read(4))
+    except OSError:
+        return False
+
+
+def _name_matches_sensitive(name: str) -> bool:
+    low = name.lower()
+    return any(marker in low for marker in SENSITIVE_PATH_MARKERS)
+
+
 def _archive_entry_details(path: Path) -> dict[str, Any]:
-    if path.suffix.lower() not in {".zip", ".skillpkg"}:
+    # Recognize containers by MAGIC, not suffix (A1). Non-containers are untouched.
+    if not _sniff_is_zip(path):
         return {}
+    budget = {"entries": _ARCHIVE_MAX_ENTRIES, "bytes": _ARCHIVE_MAX_TOTAL_BYTES, "bomb": False}
     try:
         with zipfile.ZipFile(path, "r") as archive:
-            entries = tuple(
-                {
-                    "name": info.filename,
-                    "file_size": int(info.file_size),
-                    "compress_size": int(info.compress_size),
-                    "is_dir": info.is_dir(),
-                    "escapes": _archive_entry_escapes(info.filename),
-                }
-                for info in archive.infolist()
-            )
-    except (OSError, zipfile.BadZipFile) as exc:
+            scan = _scan_zip_entries(archive, "", 0, budget)
+    except (OSError, zipfile.BadZipFile, RuntimeError, NotImplementedError) as exc:
+        # A zip-magic file we cannot read is an observation blindspot, not a pass.
         return {
+            "archive_format": "zip",
             "archive_observation_status": "archive_unreadable",
             "archive_observation_error": type(exc).__name__,
         }
-    escape_entries = tuple(entry["name"] for entry in entries if entry["escapes"])
+    status = "archive_scanned"
+    if budget["bomb"]:
+        status = "archive_resource_limit"
+    elif scan["truncated"]:
+        status = "archive_truncated"
     return {
-        "archive_entry_map": entries,
-        "archive_entry_count": len(entries),
-        "archive_escape_entries": escape_entries,
-        "archive_observation_status": "archive_scanned",
+        "archive_format": "zip",
+        "archive_entry_map": tuple(scan["entries"][:_ARCHIVE_ENTRY_MAP_CAP]),
+        "archive_entry_count": scan["entry_count"],
+        "archive_nested_count": scan["nested_count"],
+        "archive_escape_entries": tuple(scan["escapes"]),
+        "archive_sensitive_entries": tuple(scan["sensitive"]),
+        "archive_observation_status": status,
     }
+
+
+def _scan_zip_entries(
+    archive: zipfile.ZipFile, prefix: str, depth: int, budget: dict[str, Any]
+) -> dict[str, Any]:
+    """Walk one archive's entries, recursing into nested archives (bounded).
+
+    Entry names are prefixed `outer!inner!name` so an escape/sensitive hit deep in
+    a nested container is still attributable. The `budget` (entry count + total
+    uncompressed bytes, shared across the recursion) bounds work and flags bombs.
+    """
+    entries: list[dict[str, Any]] = []
+    escapes: list[str] = []
+    sensitive: list[str] = []
+    entry_count = 0
+    nested_count = 0
+    truncated = False
+    for info in archive.infolist():
+        if budget["entries"] <= 0:
+            truncated = True
+            break
+        budget["entries"] -= 1
+        entry_count += 1
+        name = info.filename
+        full = prefix + name
+        size = int(info.file_size)
+        compress = int(info.compress_size)
+        budget["bytes"] -= size
+        if budget["bytes"] < 0:
+            budget["bomb"] = True
+        if compress > 0 and size / compress > _ARCHIVE_MAX_RATIO:
+            budget["bomb"] = True
+        entry_escapes = _archive_entry_escapes(name)
+        entry_sensitive = _name_matches_sensitive(name)
+        if entry_escapes:
+            escapes.append(full)
+        if entry_sensitive:
+            sensitive.append(full)
+        entries.append(
+            {
+                "name": full,
+                "file_size": size,
+                "compress_size": compress,
+                "is_dir": info.is_dir(),
+                "escapes": entry_escapes,
+                "sensitive": entry_sensitive,
+            }
+        )
+        # Recurse into a nested archive -- the same eye, one level deeper. A cheap
+        # 4-byte header sniff classifies every entry; only true, size-bounded
+        # nested zips are fully read and recursed.
+        if info.is_dir() or depth >= _ARCHIVE_MAX_DEPTH or budget["bomb"]:
+            continue
+        try:
+            with archive.open(info) as handle:
+                head = handle.read(4)
+        except (OSError, zipfile.BadZipFile, RuntimeError, NotImplementedError):
+            continue
+        if not _is_zip_magic(head):
+            continue
+        nested_count += 1
+        if not 0 < size <= _ARCHIVE_NESTED_MAX_BYTES:
+            truncated = True  # nested archive too large to inspect -> blindspot
+            continue
+        try:
+            blob = archive.read(info)
+            with zipfile.ZipFile(io.BytesIO(blob), "r") as inner:
+                sub = _scan_zip_entries(inner, full + "!", depth + 1, budget)
+        except (OSError, zipfile.BadZipFile, RuntimeError, NotImplementedError):
+            truncated = True
+            continue
+        entries.extend(sub["entries"])
+        escapes.extend(sub["escapes"])
+        sensitive.extend(sub["sensitive"])
+        entry_count += sub["entry_count"]
+        nested_count += sub["nested_count"]
+        truncated = truncated or sub["truncated"]
+    return {
+        "entries": entries,
+        "escapes": escapes,
+        "sensitive": sensitive,
+        "entry_count": entry_count,
+        "nested_count": nested_count,
+        "truncated": truncated,
+    }
+
+
+def _ads_fingerprint(path: Path) -> tuple[tuple[str, int], ...]:
+    # Enumerate Windows alternate data streams attached to a file (excluding the
+    # main "::$DATA" stream). Returned as sorted (name, size) so it is deterministic
+    # and serializable. Best-effort: non-Windows has no ADS; any enumeration error
+    # yields () (the main-stream hash still covers ordinary content).
+    if os.name != "nt":
+        return ()
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.windll.kernel32
+
+        class _StreamData(ctypes.Structure):
+            _fields_ = [("StreamSize", ctypes.c_longlong), ("cStreamName", wintypes.WCHAR * 296)]
+
+        find_first = k32.FindFirstStreamW
+        find_first.argtypes = [wintypes.LPCWSTR, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        find_first.restype = wintypes.HANDLE
+        find_next = k32.FindNextStreamW
+        find_next.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+        find_next.restype = wintypes.BOOL
+        find_close = k32.FindClose
+        find_close.argtypes = [wintypes.HANDLE]  # else the handle overflows c_int
+        find_close.restype = wintypes.BOOL
+
+        data = _StreamData()
+        invalid = wintypes.HANDLE(-1).value
+        handle = find_first(str(path), 0, ctypes.byref(data), 0)
+        if handle == invalid:
+            return ()
+        streams: list[tuple[str, int]] = []
+        try:
+            while True:
+                name = data.cStreamName
+                if name and name != "::$DATA":
+                    streams.append((name, int(data.StreamSize)))
+                if not find_next(handle, ctypes.byref(data)):
+                    break
+        finally:
+            try:
+                find_close(handle)
+            except Exception:  # noqa: BLE001 - a close failure must not discard the result
+                pass
+        return tuple(sorted(streams))
+    except Exception:  # noqa: BLE001
+        return ()
 
 
 def _archive_entry_escapes(name: str) -> bool:
@@ -1487,7 +2102,9 @@ def _ratio(value: int, total: int) -> float:
     return round(value / total, 6)
 
 
-HASH_SKIPPED_STATUSES = frozenset({"skipped_size_limit", "skipped_unreadable"})
+HASH_SKIPPED_STATUSES = frozenset(
+    {"skipped_size_limit", "skipped_unreadable", "skipped_out_of_boundary"}
+)
 
 
 def hash_unavailable(details: Mapping[str, Any]) -> bool:

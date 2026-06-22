@@ -61,7 +61,8 @@ _BENIGN_SINK_REDIRECT_RE = re.compile(
 _FD_REDIRECT_RE = re.compile(r"(?:^|\s)(?:[0-9]+)?[<>]{1,2}&[0-9]+\b")
 _HEREDOC_MARKER_RE = re.compile(r"<<-?\s*(['\"]?)[A-Za-z_][A-Za-z0-9_]*\1")
 _PROCESS_SUBSTITUTION_RE = re.compile(r"[<>]\(([^()]*)\)")
-_COMMAND_SEGMENT_RE = re.compile(r"\s*(?:\|\||&&|\|)\s*|\n+")
+_COMMAND_SEGMENT_RE = re.compile(r"\s*(?:;|\|\||&&|\|)\s*|\n+")
+_SHELL_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
 
 
 def _is_phantom_target(target: str) -> bool:
@@ -136,6 +137,13 @@ def _codex_segment_targets_and_effects(
     if not tokens:
         return (), {SideEffect.READ}
 
+    while tokens and _SHELL_ASSIGNMENT_RE.match(tokens[0]):
+        tokens.pop(0)
+    if not tokens:
+        return (), {SideEffect.READ}
+    if tokens[0].startswith("$") or tokens[0].startswith("${"):
+        return (), {SideEffect.READ, SideEffect.WRITE}
+
     verb = Path(tokens[0]).name.lower()
     args = tuple(token for token in tokens[1:] if not token.startswith("-"))
     targets: list[str] = []
@@ -160,8 +168,38 @@ def _codex_segment_targets_and_effects(
     elif verb in {"rm", "rmdir", "unlink"}:
         effects.add(SideEffect.DELETE)
         targets.extend(_codex_path_like_args(args))
+    elif verb == "find" and any(token == "-delete" for token in tokens[1:]):
+        effects.add(SideEffect.DELETE)
+        targets.extend(_codex_path_like_args(args))
+    elif verb == "git":
+        git_effects, git_targets = _codex_git_targets_and_effects(tokens[1:])
+        effects |= git_effects
+        targets.extend(git_targets)
+    elif verb == "truncate":
+        effects.update({SideEffect.WRITE, SideEffect.DELETE})
+        targets.extend(_codex_path_like_args(args))
 
     return tuple(dict.fromkeys(targets)), effects
+
+
+def _codex_git_targets_and_effects(
+    args: Sequence[str],
+) -> tuple[set[SideEffect], tuple[str, ...]]:
+    if not args:
+        return set(), ()
+    subcommand = args[0].lower()
+    if subcommand == "clean" and any(
+        token.startswith("-") and "f" in token for token in args[1:]
+    ):
+        return {SideEffect.DELETE}, ()
+    if subcommand == "reset" and "--hard" in args[1:]:
+        return {SideEffect.WRITE, SideEffect.DELETE}, ()
+    if subcommand == "checkout" and "--" in args[1:]:
+        separator = tuple(args).index("--")
+        return {SideEffect.WRITE, SideEffect.DELETE}, tuple(
+            _codex_path_like_args(args[separator + 1 :])
+        )
+    return set(), ()
 
 
 def _reader_targets_after_pattern(args: Sequence[str]) -> tuple[str, ...]:
@@ -174,7 +212,8 @@ def _codex_read_target_args(args: Sequence[str]) -> list[str]:
     return [
         arg
         for arg in args
-        if _codex_looks_like_path(arg) and arg.strip().strip("'\"") not in {".", ".."}
+        if _codex_looks_like_path(arg)
+        and arg.strip().strip("'\"").strip("()") not in {".", ".."}
     ]
 
 
@@ -183,7 +222,7 @@ def _codex_path_like_args(args: Sequence[str]) -> list[str]:
 
 
 def _codex_looks_like_path(value: str) -> bool:
-    text = value.strip().strip("'\"")
+    text = value.strip().strip("'\"").strip("()")
     if text in {".", ".."}:
         return True
     if text.startswith(("./", "../", "/", "~")):

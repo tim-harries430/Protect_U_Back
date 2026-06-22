@@ -3,6 +3,7 @@ import zipfile
 from pathlib import Path
 
 from claude_code_hooks import (
+    _gate_switch_off_from_raw,
     action_from_claude_event,
     run_posttool_autopsy,
     run_pretool_admission,
@@ -85,6 +86,77 @@ def test_pretool_admission_denies_destructive_bash_before_claude_ask(tmp_path):
     assert "before Claude Ask" in hook_output["permissionDecisionReason"]
 
 
+def _external_project(stack):
+    # A project OUTSIDE the pub repo: deleting a file under the repo itself trips
+    # the (correct) pub-internal self-protection wall, which is not what we test here.
+    import tempfile
+
+    # Force the dir under the user home, OUTSIDE the pub repo. pytest points TMPDIR
+    # inside the repo, so a bare TemporaryDirectory() would still trip the wall.
+    proj = Path(stack.enter_context(tempfile.TemporaryDirectory(dir=str(Path.home()))))
+    e = {
+        "CLAUDE_PROJECT_DIR": str(proj),
+        "PUB_CLAUDE_HOOK_STATE_DIR": str(proj / "state"),
+        "PUB_CLAUDE_HOOK_LOG_DIR": str(proj / "logs"),
+    }
+    return proj, e
+
+
+def _ext_event(proj, *, tool_use_id, command):
+    return json.dumps({
+        "session_id": "session-note",
+        "transcript_path": str(proj / "transcript.jsonl"),
+        "cwd": str(proj),
+        "permission_mode": "default",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": command},
+        "tool_use_id": tool_use_id,
+    })
+
+
+def test_allowed_scoped_delete_writes_first_time_forensic_note():
+    import contextlib
+
+    with contextlib.ExitStack() as stack:
+        proj, e = _external_project(stack)
+        (proj / "scratch.py").write_text("x", encoding="utf-8")
+        (proj / "scratch2.py").write_text("x", encoding="utf-8")
+        logs = proj / "logs"
+
+        first = run_pretool_admission(_ext_event(proj, tool_use_id="del1", command="rm scratch.py"), environ=e)
+        assert first.output is None  # in-project single-file delete is allowed
+        notes = list(logs.glob("pub_claude_allowed_delete_*.json"))
+        assert len(notes) == 1
+        payload = json.loads(notes[0].read_text(encoding="utf-8"))
+        assert payload["kind"] == "ALLOW_NOTE"
+        assert payload["command"] == "rm scratch.py"
+        assert "delete" in payload["side_effects"]
+
+        # a second allowed scoped delete in the SAME session does not add another note
+        second = run_pretool_admission(_ext_event(proj, tool_use_id="del2", command="rm scratch2.py"), environ=e)
+        assert second.output is None
+        assert len(list(logs.glob("pub_claude_allowed_delete_*.json"))) == 1
+
+
+def test_recursive_delete_writes_no_allow_note():
+    import contextlib
+
+    with contextlib.ExitStack() as stack:
+        proj, e = _external_project(stack)
+        (proj / "build").mkdir()
+        (proj / "build" / "out.o").write_text("o", encoding="utf-8")
+        # ③: an in-project recursive delete is now ALLOWED (recoverable via the
+        # backfill journal). It does NOT write the single-file allow-note -- that note
+        # is single-file only; recursive deletes are recorded by the backfill journal.
+        result = run_pretool_admission(_ext_event(proj, tool_use_id="rmrf", command="rm -rf build"), environ=e)
+        assert result.output is None
+        assert list((proj / "logs").glob("pub_claude_allowed_delete_*.json")) == []
+        # a recursive delete that ESCAPES the project root stays KILLed.
+        escaped = run_pretool_admission(_ext_event(proj, tool_use_id="rmrf2", command="rm -rf ../outside"), environ=e)
+        assert escaped.blocked is True
+
+
 def test_pretool_admission_denies_authority_poisoning(tmp_path):
     payload = event(
         tmp_path,
@@ -124,7 +196,7 @@ def test_pretool_admission_denies_xray_review_before_claude_ask(tmp_path):
     assert "before Claude Ask" in hook_output["permissionDecisionReason"]
 
 
-def test_pretool_admission_hold_escalates_to_operator_ask(tmp_path):
+def test_pretool_admission_allows_visible_project_mkdir(tmp_path):
     payload = event(
         tmp_path,
         tool_use_id="call_mkdir_no_target",
@@ -133,34 +205,49 @@ def test_pretool_admission_hold_escalates_to_operator_ask(tmp_path):
 
     result = run_pretool_admission(json.dumps(payload), environ=env(tmp_path))
 
-    assert result.disposition == EvidenceDisposition.HOLD
-    assert result.reason_code == "CAPABILITY_PROCESS_EQUATION_INCOMPLETE"
-    hook_output = result.output["hookSpecificOutput"]
-    assert hook_output["hookEventName"] == "PreToolUse"
-    assert hook_output["permissionDecision"] == "ask"
-    assert "HOLD CAPABILITY_PROCESS_EQUATION_INCOMPLETE" in hook_output["permissionDecisionReason"]
+    assert result.disposition == EvidenceDisposition.PASS
+    assert result.reason_code == "CHANNEL_WRAP_PROPOSAL"
+    assert result.output is None
+    assert result.action.target_paths == ("tmpdir",)
 
 
-def test_gate_switch_off_suppresses_block_but_keeps_trail(tmp_path):
+def test_unknown_tool_is_denied_not_routed_to_native_allow(tmp_path):
+    payload = event(
+        tmp_path,
+        tool_use_id="call_task_tool",
+        tool_name="Task",
+        tool_input={"prompt": "inspect the repo"},
+    )
+
+    result = run_pretool_admission(json.dumps(payload), environ=env(tmp_path))
+
+    assert result.blocked is True
+    assert result.output["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "ask" not in result.output["hookSpecificOutput"]["permissionDecisionReason"].lower()
+
+
+def test_gate_switch_off_file_cannot_suppress_block(tmp_path):
     write_gate_switch(tmp_path, enabled=False)
     payload = event(
         tmp_path,
-        tool_use_id="call_rm_rf_ungated",
+        tool_use_id="call_rm_rf_legacy_switch",
         tool_input={"command": "rm -rf .", "description": "destroy project"},
     )
 
     result = run_pretool_admission(json.dumps(payload), environ=env(tmp_path))
 
-    assert result.output is None
+    assert _gate_switch_off_from_raw(json.dumps(payload)) is False
+    assert result.blocked is True
+    assert result.output["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert result.disposition.value == "KILL"
     assert result.state_path.exists()
     row = last_log_row(tmp_path)
-    assert row["gate_switch"] == "off"
+    assert row["gate_switch"] == "off_ignored"
     assert row["disposition"] == "KILL"
-    assert row["blocked"] is False
+    assert row["blocked"] is True
 
 
-def test_gate_switch_must_be_literal_false_to_disarm(tmp_path):
+def test_malformed_gate_switch_keeps_gate_armed(tmp_path):
     switch_dir = tmp_path / ".claude"
     switch_dir.mkdir(parents=True, exist_ok=True)
     (switch_dir / "pub_gate_switch.json").write_text("not json", encoding="utf-8")
@@ -177,7 +264,7 @@ def test_gate_switch_must_be_literal_false_to_disarm(tmp_path):
     assert last_log_row(tmp_path)["gate_switch"] == "on"
 
 
-def test_gate_switch_off_silences_posttool(tmp_path):
+def test_gate_switch_off_file_cannot_silence_posttool(tmp_path):
     write_gate_switch(tmp_path, enabled=False)
     target = tmp_path / "pub_probe.txt"
     pre_payload = event(
@@ -199,7 +286,8 @@ def test_gate_switch_off_silences_posttool(tmp_path):
     }
     post = run_posttool_autopsy(json.dumps(post_payload), environ=env(tmp_path))
 
-    assert post.output is None
+    assert post.output is not None
+    assert "PUB_XRAY_AUTOPSY" in post.output["hookSpecificOutput"]["additionalContext"]
     assert post.seal is not None
     assert post.review is not None
 
@@ -263,6 +351,22 @@ def test_read_of_claude_config_is_case_insensitive_kill(tmp_path):
     assert result.output["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
+def test_read_of_global_claude_config_is_pub_owned_kill(tmp_path):
+    payload = event(
+        tmp_path,
+        tool_use_id="call_read_global_claude_config",
+        tool_name="Read",
+        tool_input={"file_path": "C:/Users/TestUser/.claude/settings.json"},
+    )
+
+    result = run_pretool_admission(json.dumps(payload), environ=env(tmp_path))
+
+    assert result.blocked is True
+    assert result.disposition.value == "KILL"
+    assert result.reason_code == "CAPABILITY_PROTECTED_TARGET_DENIED"
+    assert result.output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
 def test_bash_indirect_command_variable_is_held(tmp_path):
     payload = event(
         tmp_path,
@@ -277,8 +381,10 @@ def test_bash_indirect_command_variable_is_held(tmp_path):
 
     assert result.blocked is True
     assert result.disposition.value == "HOLD"
-    assert result.reason_code == "CAPABILITY_PROCESS_EQUATION_INCOMPLETE"
-    assert result.output["hookSpecificOutput"]["permissionDecision"] == "ask"
+    # v2: the fail-closed recognizer flags this as opaque execution (was
+    # UNKNOWN_COMMAND_SURFACE in the v1 command-surface split). Same HOLD.
+    assert result.reason_code == "COMMAND_SURFACE_OPAQUE_EXECUTION"
+    assert result.output["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
 def test_bash_blocks_destructive_non_rm_surfaces(tmp_path):
@@ -354,12 +460,17 @@ def test_posttool_autopsy_closes_xray_transport_after_allowed_tool(tmp_path):
     assert post.seal.continuity_state == "BROKEN"
     assert post.seal.witness_count >= 1
     assert post.review is not None
-    assert post.review.disposition.value == "QUARANTINE"
+    # De-noise (2026-06-21): a benign ALLOWED write declaring WRITE on its target is
+    # the job, not an object substitution. The X-ray still OBSERVES the mutation
+    # (MUTATED/BROKEN/witness>=1 above) but close_xray_transport vouches it as the
+    # declared change (expected_mutation), so the review no longer quarantines it.
+    assert post.seal.expected_mutation is True
+    assert post.review.disposition.value == "PASS"
     assert leaks_forbidden_authority(post.seal.to_dict()) is False
     hook_output = post.output["hookSpecificOutput"]
     assert hook_output["hookEventName"] == "PostToolUse"
     assert "additionalContext" in hook_output
-    assert "review=QUARANTINE" in hook_output["additionalContext"]
+    assert "review=PASS" in hook_output["additionalContext"]
     assert "permissionDecision" not in hook_output
 
 
@@ -399,8 +510,8 @@ def session_event(tmp_path, *, session, tool_use_id, command):
 def test_temporal_drift_soft_exposure_escalates_only_with_history(tmp_path):
     # The whole thesis of the temporal layer, proven THROUGH the live hook:
     # the SAME proposal gets a different temporal verdict depending on session
-    # history. The spatial/X-ray layer now fail-closes opaque interpreter calls
-    # even when temporally cold.
+    # history. The command-surface PUB stage now fail-closes opaque interpreter
+    # calls even when temporally cold.
     e = env(tmp_path)
     (tmp_path / "data.json").write_text("{}", encoding="utf-8")
 
@@ -410,11 +521,12 @@ def test_temporal_drift_soft_exposure_escalates_only_with_history(tmp_path):
         environ=e,
     )
     assert cold.disposition.value == "HOLD"
-    assert cold.reason_code == "XRAY_REVIEW_OBSERVATION_BLINDSPOT"
+    assert cold.reason_code == "COMMAND_SURFACE_OPAQUE_EXECUTION"
     assert cold.temporal_vote == "PASS"
 
     # Now the drift: read project data first (soft exposure accumulates), then
-    # run the identical opaque interpreter. Step one passes; the exit is held.
+    # run the identical opaque interpreter. Step one passes; the exit is denied
+    # by PUB, not delegated to Claude Code's native Allow surface.
     drift_read = run_pretool_admission(
         json.dumps(session_event(tmp_path, session="drift", tool_use_id="t_read",
                                   command="cat ./data.json")),
@@ -428,12 +540,12 @@ def test_temporal_drift_soft_exposure_escalates_only_with_history(tmp_path):
         environ=e,
     )
     assert drift_exit.disposition.value == "HOLD"
-    assert drift_exit.reason_code == "XRAY_REVIEW_OBSERVATION_BLINDSPOT"
+    assert drift_exit.reason_code == "COMMAND_SURFACE_OPAQUE_EXECUTION"
     assert drift_exit.temporal_vote == "HOLD"
     assert drift_exit.temporal_reason_code == "TEMPORAL_ACCUMULATED_EXPOSURE_EXIT"
     hook_output = drift_exit.output["hookSpecificOutput"]
-    assert hook_output["permissionDecision"] == "ask"
-    assert "XRAY_REVIEW_OBSERVATION_BLINDSPOT" in hook_output["permissionDecisionReason"]
+    assert hook_output["permissionDecision"] == "deny"
+    assert "COMMAND_SURFACE_OPAQUE_EXECUTION" in hook_output["permissionDecisionReason"]
 
 
 def test_temporal_drift_hard_taint_egress_is_killed(tmp_path):
@@ -504,3 +616,127 @@ def test_claude_bash_parser_tracks_curl_url_target(tmp_path):
 
     assert "https://api.example.invalid/status" in action.target_paths
     assert "network" in {effect.value for effect in action.expected_side_effects}
+
+
+def test_interpreter_script_file_is_targeted_and_held(tmp_path):
+    script = tmp_path / "pub_rt_payload.py"
+    script.write_text("print('report')\n", encoding="utf-8")
+    payload = event(
+        tmp_path,
+        tool_use_id="call_python_script",
+        tool_input={
+            "command": "python3 pub_rt_payload.py",
+            "description": "run local report script",
+        },
+    )
+
+    action = action_from_claude_event(payload, environ=env(tmp_path))
+    result = run_pretool_admission(json.dumps(payload), environ=env(tmp_path))
+
+    assert action.target_paths == ("pub_rt_payload.py",)
+    assert result.proposal.target_paths == ("pub_rt_payload.py",)
+    assert result.blocked is True
+    assert result.disposition.value == "HOLD"
+    assert result.reason_code == "COMMAND_SURFACE_OPAQUE_EXECUTION"
+    assert result.output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_shell_script_file_is_targeted_and_held(tmp_path):
+    script = tmp_path / "pub_rt_payload.sh"
+    script.write_text("echo report\n", encoding="utf-8")
+    payload = event(
+        tmp_path,
+        tool_use_id="call_bash_script",
+        tool_input={
+            "command": "bash pub_rt_payload.sh",
+            "description": "run local shell script",
+        },
+    )
+
+    action = action_from_claude_event(payload, environ=env(tmp_path))
+    result = run_pretool_admission(json.dumps(payload), environ=env(tmp_path))
+
+    assert action.target_paths == ("pub_rt_payload.sh",)
+    assert result.proposal.target_paths == ("pub_rt_payload.sh",)
+    assert result.blocked is True
+    assert result.disposition.value == "HOLD"
+    assert result.reason_code == "COMMAND_SURFACE_OPAQUE_EXECUTION"
+    assert result.output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_pipeline_into_bare_interpreter_is_held_not_downgraded_to_read(tmp_path):
+    script = tmp_path / "pub_rt_payload.py"
+    script.write_text("print('from stdin')\n", encoding="utf-8")
+    payload = event(
+        tmp_path,
+        tool_use_id="call_pipe_python",
+        tool_input={
+            "command": "cat pub_rt_payload.py | python3",
+            "description": "pipe script into interpreter",
+        },
+    )
+
+    action = action_from_claude_event(payload, environ=env(tmp_path))
+    result = run_pretool_admission(json.dumps(payload), environ=env(tmp_path))
+
+    assert action.target_paths == ("pub_rt_payload.py",)
+    assert result.blocked is True
+    assert result.disposition.value == "HOLD"
+    assert result.reason_code == "COMMAND_SURFACE_OPAQUE_EXECUTION"
+    assert result.output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_interpreter_stdin_without_stable_file_is_held(tmp_path):
+    payload = event(
+        tmp_path,
+        tool_use_id="call_python_stdin",
+        tool_input={
+            "command": "python3 -",
+            "description": "run interpreter from stdin",
+        },
+    )
+
+    action = action_from_claude_event(payload, environ=env(tmp_path))
+    result = run_pretool_admission(json.dumps(payload), environ=env(tmp_path))
+
+    assert action.target_paths == ()
+    assert result.blocked is True
+    assert result.disposition.value == "HOLD"
+    assert result.reason_code == "COMMAND_SURFACE_OPAQUE_EXECUTION"
+    assert result.output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_interpreter_version_probe_still_passes(tmp_path):
+    payload = event(
+        tmp_path,
+        tool_use_id="call_python_version",
+        tool_input={
+            "command": "python3 --version",
+            "description": "check interpreter version",
+        },
+    )
+
+    result = run_pretool_admission(json.dumps(payload), environ=env(tmp_path))
+
+    assert result.output is None
+    assert result.disposition.value == "PASS"
+
+
+def test_unknown_command_surface_is_pub_hold_not_opaque(tmp_path):
+    payload = event(
+        tmp_path,
+        tool_use_id="call_unknown_binary",
+        tool_input={
+            "command": "mysterytool --flag",
+            "description": "unknown command surface",
+        },
+    )
+
+    result = run_pretool_admission(json.dumps(payload), environ=env(tmp_path))
+
+    assert result.blocked is True
+    assert result.disposition.value == "HOLD"
+    # v2: the fail-closed recognizer flags this as opaque execution (was
+    # UNKNOWN_COMMAND_SURFACE in the v1 command-surface split). Same HOLD.
+    assert result.reason_code == "COMMAND_SURFACE_OPAQUE_EXECUTION"
+    assert result.output["hookSpecificOutput"]["permissionDecision"] == "deny"

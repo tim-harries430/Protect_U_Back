@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass, field
 from enum import Enum
 from os.path import normcase, normpath
@@ -295,6 +296,162 @@ def _command_mentions_any_path(command_text: str, tokens: Iterable[str]) -> bool
     return any(token in text for token in tokens)
 
 
+# --- shared scoped-delete predicate -----------------------------------------
+# A delete (rm OR mv -- mv removes its source) is only "scoped" when we can
+# POSITIVELY confirm it is a single recoverable in-project file removal: at least
+# one concrete target, no recursive/bulk/glob marker, every target modelable
+# (no shell-expanded ~ / $ / % / glob that _resolve_target cannot see) and
+# resolving strictly INSIDE a project root without BEING a root. Any uncertainty
+# returns False so the destructive KILL path is kept (fail-closed). This is the
+# SINGLE source of truth consulted by both the OT boundary judge (audit_boundary)
+# and the capability wall, so the two judges cannot drift apart on delete nuance.
+RECURSIVE_DELETE_TOKENS = (
+    " -r", " -rf", " -fr", "-recurse", "--recursive", "rmdir", " rd ", " /s", "*", "?",
+)
+# Relaxation is allowlisted by explicit delete/move VERB (enumerate-the-good is
+# safe on the relax side: missing a verb only keeps the conservative KILL). A bare
+# truncate redirect ("> file") carries a DELETE effect but no verb, so it is never
+# relaxed -- it stays blocked.
+_SCOPED_DELETE_VERBS = (
+    " rm ", " del ", " erase ", " unlink ", "remove-item",
+    " mv ", " move ", " ren ", "move-item", "rename-item",
+)
+_UNMODELABLE_TARGET_CHARS = ("~", "$", "%", "*", "?", "[")
+
+
+def _delete_target_is_scoped(target: str, cwd: str, roots: Sequence[Path]) -> bool:
+    stripped = target.strip().strip('"').strip("'")
+    if not stripped or stripped in (".", "..", "/", "\\"):
+        return False
+    if any(ch in stripped for ch in _UNMODELABLE_TARGET_CHARS):
+        return False
+    resolved = _resolve_target(cwd, stripped)
+    if not any(_is_within(resolved, root) for root in roots):
+        return False
+    resolved_text = normcase(normpath(str(resolved)))
+    for root in roots:
+        if resolved_text == normcase(normpath(str(root))).rstrip("\\/"):
+            return False  # deleting a project root itself is never "scoped"
+    return True
+
+
+def is_scoped_single_file_delete(
+    command_text: str,
+    target_paths: Sequence[str],
+    cwd: str,
+    project_roots: Sequence[Path],
+) -> bool:
+    targets = [t for t in target_paths if t and t.strip()]
+    if not targets or not project_roots:
+        return False
+    text = _normalized_command(command_text)
+    if _contains_any(text, RECURSIVE_DELETE_TOKENS):
+        return False
+    if not _contains_any(text, _SCOPED_DELETE_VERBS):
+        return False
+    return all(_delete_target_is_scoped(t, cwd, project_roots) for t in targets)
+
+
+# Surfaces a recursive in-project delete must NEVER touch, even inside the project
+# root: version control, pub/agent control, and credential stores. (.phi is also in
+# PROTECTED_PATH_TOKENS / protected_store_roots, but the boundary's protected check
+# only covers .phi -- .git/.claude/.codex/.ssh are NOT, so the recursive relax must
+# exclude them itself or it would hand an agent `rm -rf .git`.)
+RECURSIVE_DELETE_PROTECTED_SEGMENTS = (
+    ".git", ".phi", ".claude", ".codex", ".ssh", ".aws", ".gnupg", "secrets",
+)
+# pub's own modules + secret files: never recursively removable even in-project.
+RECURSIVE_DELETE_PROTECTED_NAMES = (
+    ".env",
+    "ot_gate.py", "capability_wall.py", "llm_channel.py", "parallel_audit.py",
+    "claude_code_hooks.py", "protect_scan.py", "transition_xray.py",
+    "xray_review.py", "xray_transport.py", "xray_prison.py",
+)
+_RECURSIVE_DELETE_DYNAMIC = ("$(", "${", "`")
+_RECURSIVE_DELETE_GLOB = ("*", "?", "[")
+
+
+def _recursive_delete_target_is_scoped(target: str, cwd: str, roots: Sequence[Path]) -> bool:
+    stripped = target.strip().strip('"').strip("'")
+    if not stripped or stripped in (".", "..", "/", "\\", "~"):
+        return False
+    if any(ch in stripped for ch in _UNMODELABLE_TARGET_CHARS):
+        return False
+    resolved = _resolve_target(cwd, stripped)
+    if not any(_is_within(resolved, root) for root in roots):
+        return False
+    resolved_text = normcase(normpath(str(resolved)))
+    for root in roots:
+        if resolved_text == normcase(normpath(str(root))).rstrip("\\/"):
+            return False  # deleting a project root itself is never "scoped"
+    parts = {part.lower() for part in resolved.parts}
+    if any(seg in parts for seg in RECURSIVE_DELETE_PROTECTED_SEGMENTS):
+        return False
+    if resolved.name.lower() in RECURSIVE_DELETE_PROTECTED_NAMES:
+        return False
+    return True
+
+
+_DELETE_VERB_BASES = frozenset(
+    {"rm", "del", "erase", "unlink", "rmdir", "remove-item", "rd"}
+)
+_SHELL_OPERATOR_MARKERS = ("&&", "||", ";", "|", "\n", "`", "$(", "${", "&")
+
+
+def delete_command_operands(command_text: str) -> Optional[list[str]]:
+    """Operands of a SINGLE simple delete command, or None if it is not one we can
+    safely read (chained/piped/redirected/dynamic -> None -> no relax). pub's bash
+    target parser drops bare directory names (`rm -rf build` -> no target), so the
+    recursive-delete relax and its journal re-read the operands here. None is
+    fail-closed: the caller treats it as 'cannot confirm scope' and keeps the block."""
+    if any(marker in command_text for marker in _SHELL_OPERATOR_MARKERS):
+        return None
+    try:
+        tokens = shlex.split(command_text, posix=True)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+    base = tokens[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if base not in _DELETE_VERB_BASES:
+        return None
+    return [token for token in tokens[1:] if not token.startswith("-")]
+
+
+def is_scoped_recursive_delete(
+    command_text: str,
+    target_paths: Sequence[str],
+    cwd: str,
+    project_roots: Sequence[Path],
+) -> bool:
+    """POSITIVELY confirm a RECURSIVE/directory delete is safe to relax: a real delete
+    verb, no dynamic expansion the gate cannot see, no glob it cannot enumerate, and
+    EVERY target resolving strictly inside a project root (never the root itself) and
+    clear of the protected surfaces (.git/.phi/.claude/.codex/.ssh/secrets, .env, pub
+    modules). Any uncertainty -> False (fail-closed, the destructive KILL stays). The
+    pre-image is journalled before the op lands (backfill), so an in-project recursive
+    delete is recoverable; glob/dynamic stay blocked because they cannot be enumerated
+    or journalled."""
+    if not project_roots:
+        return False
+    if _contains_any(command_text, _RECURSIVE_DELETE_DYNAMIC):
+        return False
+    if _contains_any(command_text, _RECURSIVE_DELETE_GLOB):
+        return False
+    if not _contains_any(_normalized_command(command_text), _SCOPED_DELETE_VERBS):
+        return False
+    targets = [t for t in target_paths if t and t.strip()]
+    if not targets:
+        # pub's bash parser drops bare dir names; re-read the delete operands.
+        operands = delete_command_operands(command_text)
+        if operands is None:
+            return False
+        targets = [t for t in operands if t and t.strip()]
+    if not targets:
+        return False
+    return all(_recursive_delete_target_is_scoped(t, cwd, project_roots) for t in targets)
+
+
 def _protected_targets(proposal: CommandProposal, policy: OTPolicy) -> List[Path]:
     protected_roots = policy.resolved_protected_roots()
     protected = []
@@ -503,7 +660,21 @@ def audit_boundary(proposal: CommandProposal, policy: OTPolicy) -> JudgeTestimon
             or ("protected Phi path in command text",),
         )
 
-    if SideEffect.DELETE in effects:
+    if (
+        SideEffect.DELETE in effects
+        and not is_scoped_single_file_delete(
+            proposal.command_text,
+            proposal.target_paths,
+            proposal.cwd,
+            policy.resolved_roots(),
+        )
+        and not is_scoped_recursive_delete(
+            proposal.command_text,
+            proposal.target_paths,
+            proposal.cwd,
+            policy.resolved_roots(),
+        )
+    ):
         return JudgeTestimony(
             judge=JudgeName.BOUNDARY,
             vote=JudgeVote.KILL,

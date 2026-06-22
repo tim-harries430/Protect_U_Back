@@ -3,6 +3,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import re
+import shutil
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -17,12 +20,34 @@ TOOL_MATCHER = "*"
 PRETOOL_SCRIPT = "pretool_admission.py"
 POSTTOOL_SCRIPT = "posttool_autopsy.py"
 MANAGED_SCRIPTS = (PRETOOL_SCRIPT, POSTTOOL_SCRIPT)
-# Shared contract with claude_code_hooks.GATE_SWITCH_FILE_NAME: the hook reads
-# this file fresh on every invocation, so flipping it here takes effect on the
-# next tool call in every live session -- no restart, unlike connect/disconnect
-# whose registration is cached per session.
+# Shared filename with claude_code_hooks.GATE_SWITCH_FILE_NAME. Older builds
+# treated this as a live disarm switch; current builds keep it only for
+# compatibility/status and never let it relax hook enforcement.
 GATE_SWITCH_FILE = "pub_gate_switch.json"
 GATE_SWITCH_SCHEMA_VERSION = "pub_gate_switch:v0"
+
+# Cross-platform connect. The hook command Claude Code stores is a single
+# string handed to the OS shell, so it is platform-specific: a WSL-style
+# `python3 /mnt/c/dev/sp/...` command does not resolve when Claude Code runs as
+# a native Windows process, and a Windows `py -3 C:\dev\sp\...` command does not
+# resolve under WSL/Linux. The platform mode picks the right interpreter and
+# path style for wherever Claude Code actually runs.
+#   * auto    -- match the OS this connector runs on (the common case: you run
+#                the launcher on the same machine as Claude Code).
+#   * windows -- `py -3` (or python/python3 if py is absent) and Windows paths;
+#                normalize a /mnt/<d>/... root to <D>:\...
+#   * posix   -- `python3` and POSIX paths; normalize <D>:\... to /mnt/<d>/...
+# Explicit python_bin / protect_root arguments are always honored verbatim so a
+# caller can pin an exact command; auto only fills in what was left blank and
+# never rewrites an explicitly supplied path.
+AUTO_PLATFORM = "auto"
+WINDOWS_PLATFORM = "windows"
+POSIX_PLATFORM = "posix"
+PLATFORM_CHOICES = (AUTO_PLATFORM, WINDOWS_PLATFORM, POSIX_PLATFORM)
+DEFAULT_PLATFORM = AUTO_PLATFORM
+
+_WSL_MOUNT_RE = re.compile(r"^/mnt/([A-Za-z])(?:/(.*))?$")
+_WINDOWS_DRIVE_RE = re.compile(r"^([A-Za-z]):[\\/](.*)$")
 
 
 class ClaudeCodeConnectorError(RuntimeError):
@@ -33,12 +58,15 @@ def status_claude_code(
     claude_project: str | Path | None = None,
     *,
     protect_root: str | Path | None = None,
-    python_bin: str = "python3",
+    python_bin: str | None = None,
+    platform: str = DEFAULT_PLATFORM,
 ) -> dict[str, Any]:
     project_root = find_claude_project(claude_project)
     settings_path = _settings_path(project_root)
     settings = _read_settings(settings_path)
-    commands = _managed_commands(protect_root=protect_root, python_bin=python_bin)
+    resolved_python = _effective_python_bin(python_bin, platform)
+    resolved_root = _effective_protect_root(protect_root, platform)
+    commands = _managed_commands(protect_root=resolved_root, python_bin=resolved_python)
     pretool_hook = _has_hook_command(settings, "PreToolUse", commands["PreToolUse"])
     posttool_hook = _has_hook_command(settings, "PostToolUse", commands["PostToolUse"])
     switch_path = _gate_switch_path(project_root)
@@ -47,12 +75,16 @@ def status_claude_code(
         "settings_path": str(settings_path),
         "settings_exists": settings_path.exists(),
         "connected": pretool_hook and posttool_hook,
-        "gate_switch": "off" if _gate_switch_disarmed(switch_path) else "on",
+        "gate_switch": "on",
+        "gate_switch_legacy_request": _gate_switch_legacy_request(switch_path),
         "gate_switch_path": str(switch_path),
         "pretool_hook": pretool_hook,
         "posttool_hook": posttool_hook,
         "managed_hook_count": _managed_hook_count(settings),
         "matcher": TOOL_MATCHER,
+        "platform": _resolve_platform(platform),
+        "python_bin": resolved_python,
+        "protect_root": resolved_root,
         "pretool_command": commands["PreToolUse"],
         "posttool_command": commands["PostToolUse"],
         "backup_path": str(_backup_path(settings_path)),
@@ -64,14 +96,17 @@ def connect_claude_code(
     claude_project: str | Path | None = None,
     *,
     protect_root: str | Path | None = None,
-    python_bin: str = "python3",
+    python_bin: str | None = None,
+    platform: str = DEFAULT_PLATFORM,
 ) -> dict[str, Any]:
     project_root = find_claude_project(claude_project)
     settings_path = _settings_path(project_root)
     settings = _read_settings(settings_path)
     original = _canonical(settings)
 
-    commands = _managed_commands(protect_root=protect_root, python_bin=python_bin)
+    resolved_python = _effective_python_bin(python_bin, platform)
+    resolved_root = _effective_protect_root(protect_root, platform)
+    commands = _managed_commands(protect_root=resolved_root, python_bin=resolved_python)
     _remove_managed_hooks(settings)
     _append_hook_command(settings, "PreToolUse", commands["PreToolUse"])
     _append_hook_command(settings, "PostToolUse", commands["PostToolUse"])
@@ -87,10 +122,9 @@ def connect_claude_code(
         project_root,
         protect_root=protect_root,
         python_bin=python_bin,
+        platform=platform,
     )
     result["changed"] = changed
-    result["protect_root"] = _protect_root_literal(protect_root)
-    result["python_bin"] = python_bin
     return result
 
 
@@ -121,24 +155,29 @@ def gate_claude_code(
     project_root = find_claude_project(claude_project)
     switch_path = _gate_switch_path(project_root)
     switch_path.parent.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any] = {
+        "schema_version": GATE_SWITCH_SCHEMA_VERSION,
+        "enabled": True,
+    }
+    if enabled is False:
+        payload["deprecated_disarm_request"] = True
+        payload["requested_enabled"] = False
     switch_path.write_text(
-        json.dumps(
-            {"schema_version": GATE_SWITCH_SCHEMA_VERSION, "enabled": enabled},
-            indent=2,
-        )
+        json.dumps(payload, indent=2)
         + "\n",
         encoding="utf-8",
         newline="",
     )
     result = status_claude_code(project_root)
+    result["requested_enabled"] = enabled
+    result["effective_enabled"] = True
     result["note"] = (
         "Gate ON: blocking re-armed. Effective on the next tool call in every "
         "live session of this project; no restart needed."
         if enabled
-        else "Gate OFF: nothing is blocked or escalated, but hooks stay "
-        "registered and the audit trail keeps recording. Effective on the "
-        "next tool call; no restart needed. Re-arm with 'on'; remove hooks "
-        "entirely with 'disconnect'."
+        else "Gate OFF is removed: blocking remains armed. Hooks stay "
+        "registered, audit continues, and live disarm requests are ignored. "
+        "Use disconnect only as an operator setup action outside agent work."
     )
     return result
 
@@ -147,12 +186,14 @@ def verify_claude_code(
     claude_project: str | Path | None = None,
     *,
     protect_root: str | Path | None = None,
-    python_bin: str = "python3",
+    python_bin: str | None = None,
+    platform: str = DEFAULT_PLATFORM,
 ) -> dict[str, Any]:
     status = status_claude_code(
         claude_project,
         protect_root=protect_root,
         python_bin=python_bin,
+        platform=platform,
     )
     project_root = Path(status["claude_project"])
 
@@ -208,14 +249,17 @@ def _gate_switch_path(project_root: Path) -> Path:
     return project_root / ".claude" / GATE_SWITCH_FILE
 
 
-def _gate_switch_disarmed(switch_path: Path) -> bool:
-    # Mirror of claude_code_hooks._gate_switch_off, fail closed the same way:
-    # missing, unreadable, or malformed reads as armed.
+def _gate_switch_legacy_request(switch_path: Path) -> str:
+    # Visibility only: surface stale/off requests without changing enforcement.
     try:
         payload = json.loads(switch_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return False
-    return isinstance(payload, dict) and payload.get("enabled") is False
+        return "none"
+    if isinstance(payload, dict) and payload.get("enabled") is False:
+        return "off_ignored"
+    if isinstance(payload, dict) and payload.get("deprecated_disarm_request") is True:
+        return "off_ignored"
+    return "none"
 
 
 def _read_settings(settings_path: Path) -> dict[str, Any]:
@@ -365,6 +409,83 @@ def _protect_root_literal(protect_root: str | Path | None) -> str:
     return str(protect_root).strip().strip('"').strip("'")
 
 
+def _resolve_platform(platform: str | None) -> str:
+    value = (platform or AUTO_PLATFORM).strip().lower()
+    if value in (WINDOWS_PLATFORM, POSIX_PLATFORM):
+        return value
+    if value not in ("", AUTO_PLATFORM):
+        raise ClaudeCodeConnectorError(
+            f"unknown platform mode {platform!r}; choose one of {PLATFORM_CHOICES}."
+        )
+    return WINDOWS_PLATFORM if os.name == "nt" else POSIX_PLATFORM
+
+
+def _effective_python_bin(python_bin: str | None, platform: str | None) -> str:
+    # An explicit interpreter is honored verbatim; only a blank one is resolved
+    # from the platform, so existing callers that pin "python3" are unaffected.
+    if python_bin is not None and str(python_bin).strip():
+        return str(python_bin).strip()
+    return _default_python_bin(platform)
+
+
+def _default_python_bin(platform: str | None) -> str:
+    if _resolve_platform(platform) == WINDOWS_PLATFORM:
+        if shutil.which("py"):
+            # The Windows Python launcher; -3 pins Python 3 over any legacy 2.x.
+            return "py -3"
+        return "python" if shutil.which("python") else "python3"
+    return "python3"
+
+
+def _effective_protect_root(protect_root: str | Path | None, platform: str | None) -> str:
+    literal = _protect_root_literal(protect_root)
+    requested = (platform or AUTO_PLATFORM).strip().lower()
+    if requested in (WINDOWS_PLATFORM, POSIX_PLATFORM):
+        return _convert_path_for_platform(literal, requested)
+    # auto: do not change the mount style (so an explicit /mnt or C: path keeps
+    # its target), but still normalize backslashes to forward slashes. The path
+    # is embedded in a shell command; a blank root resolves to this machine's
+    # own path, which on Windows is C:\dev\sp -- and the shell that runs the
+    # hook strips those backslashes (C:\dev\sp\pretool_admission.py collapses to
+    # C:devsppretool_admission.py and fails to open). Forward slashes survive
+    # every shell and Python on Windows accepts them.
+    return literal.replace("\\", "/")
+
+
+def _convert_path_for_platform(path: str, platform: str) -> str:
+    if platform == WINDOWS_PLATFORM:
+        return _to_windows_path(path)
+    if platform == POSIX_PLATFORM:
+        return _to_posix_path(path)
+    return path
+
+
+def _to_windows_path(path: str) -> str:
+    # /mnt/c/dev/sp -> C:/dev/sp. Forward slashes on purpose: this path is
+    # embedded in the hook command string, which Claude Code hands to a shell
+    # before exec. Backslashes do not survive that shell -- bash/sh strip them
+    # (C:\dev\sp\pretool_admission.py collapses to C:devsppretool_admission.py,
+    # which then resolves against cwd and fails to open). Python on Windows
+    # accepts '/' in paths and no shell treats '/' as an escape character, so
+    # '/' is the portable choice for both cmd.exe and bash-run hooks.
+    match = _WSL_MOUNT_RE.match(path)
+    if not match:
+        return path.replace("\\", "/")
+    drive = match.group(1).upper()
+    tail = match.group(2) or ""
+    return f"{drive}:/{tail}" if tail else f"{drive}:/"
+
+
+def _to_posix_path(path: str) -> str:
+    # C:\dev\sp -> /mnt/c/dev/sp ; already-POSIX paths pass through unchanged.
+    match = _WINDOWS_DRIVE_RE.match(path)
+    if not match:
+        return path
+    drive = match.group(1).lower()
+    tail = match.group(2).replace("\\", "/").rstrip("/")
+    return f"/mnt/{drive}/{tail}" if tail else f"/mnt/{drive}"
+
+
 def _script_path(root: str, script_name: str) -> str:
     root = root.rstrip("/\\")
     separator = "\\" if "\\" in root and "/" not in root else "/"
@@ -404,7 +525,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("command", choices=("status", "connect", "disconnect", "verify", "on", "off"))
     parser.add_argument("--claude-project", default=".")
     parser.add_argument("--protect-root")
-    parser.add_argument("--python-bin", default="python3")
+    parser.add_argument(
+        "--python-bin",
+        default=None,
+        help="Python command as seen by Claude Code; blank auto-detects per --platform.",
+    )
+    parser.add_argument(
+        "--platform",
+        choices=PLATFORM_CHOICES,
+        default=DEFAULT_PLATFORM,
+        help="Target platform for the hook command (auto matches this machine).",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
@@ -413,11 +544,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.claude_project,
             protect_root=args.protect_root,
             python_bin=args.python_bin,
+            platform=args.platform,
         ),
         "connect": lambda: connect_claude_code(
             args.claude_project,
             protect_root=args.protect_root,
             python_bin=args.python_bin,
+            platform=args.platform,
         ),
         "disconnect": lambda: disconnect_claude_code(args.claude_project),
         "on": lambda: gate_claude_code(args.claude_project, enabled=True),
@@ -426,6 +559,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.claude_project,
             protect_root=args.protect_root,
             python_bin=args.python_bin,
+            platform=args.platform,
         ),
     }
     try:

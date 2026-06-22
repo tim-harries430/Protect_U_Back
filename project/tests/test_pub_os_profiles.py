@@ -100,9 +100,24 @@ def test_agent_runtime_checks_only_active_cd_profile():
         cd_status_fn=lambda *args, **kwargs: _codex_status(),
     )
 
+    assert admission.state == ProfileState.HOLD
+    assert admission.reason_code == "AGENT_RUNTIME_UNMANAGED"
+    assert "runner:not_attached" in admission.evidence
+    assert admission.to_dict()["active_profile"] == "cd"
+    assert admission.to_dict()["runner_attached"] is False
+
+
+def test_agent_runtime_supervised_only_when_runner_attached_cd():
+    admission = check_agent_runtime(
+        "cd",
+        cd_status_fn=lambda *args, **kwargs: _codex_status(),
+        runner_attached=True,
+    )
+
     assert admission.state == ProfileState.SUPERVISED
     assert admission.reason_code == "AGENT_RUNTIME_SUPERVISED"
     assert admission.to_dict()["active_profile"] == "cd"
+    assert admission.to_dict()["runner_attached"] is True
 
 
 def test_agent_runtime_checks_only_active_cc_profile():
@@ -110,6 +125,20 @@ def test_agent_runtime_checks_only_active_cc_profile():
         "cc",
         cc_status_fn=lambda *args, **kwargs: _claude_status(),
         cd_status_fn=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("cd was checked")),
+    )
+
+    assert admission.state == ProfileState.HOLD
+    assert admission.reason_code == "AGENT_RUNTIME_UNMANAGED"
+    assert "runner:not_attached" in admission.evidence
+    assert admission.to_dict()["active_profile"] == "cc"
+
+
+def test_agent_runtime_supervised_only_when_runner_attached_cc():
+    admission = check_agent_runtime(
+        "cc",
+        cc_status_fn=lambda *args, **kwargs: _claude_status(),
+        cd_status_fn=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("cd was checked")),
+        runner_attached=True,
     )
 
     assert admission.state == ProfileState.SUPERVISED
@@ -131,6 +160,7 @@ def test_kingdom_supervision_is_active_profile_adapter():
     ok = check_kingdom_supervision(
         active_profile="cc",
         cc_status_fn=lambda *args, **kwargs: _claude_status(),
+        runner_attached=True,
     )
     bad = check_kingdom_supervision(
         active_profile="cd",

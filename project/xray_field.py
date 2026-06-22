@@ -376,6 +376,13 @@ def _contributors(piece: XrayPiece, *, state_hash: str) -> dict[str, float]:
 
 
 def _piece_observation_unknown(piece: XrayPiece) -> bool:
+    if piece.details.get("observation_boundary") == "outside_project_root":
+        # Deliberate non-observation of an out-of-boundary referent. The core
+        # still HOLDs it (xray_review OBSERVATION_BLINDSPOT via exists+no-sha256),
+        # but it is NOT a field substitution -- content never claimed cannot be
+        # swapped. Keep it OBSERVED so the transport seal stays STABLE and does
+        # not escalate a benign external read to QUARANTINE.
+        return False
     if piece.exists is None:
         return True
     if piece.kind == "target_path" and piece.exists is True and piece.sha256 is None:

@@ -12,7 +12,6 @@ from adapter_wall import ActionDomain, ActionEnvelope, AdapterActionType
 from harness_adapter import normalize_harness_event
 from llm_channel import ChannelType
 from ot_gate import DeclaredScope, SideEffect
-from parallel_audit import EvidenceDisposition
 from phi_registry import ActorType, PhiRegistry
 from protect_scan import (
     ProtectSurface,
@@ -258,7 +257,7 @@ def _agent_audit(args: argparse.Namespace) -> Dict[str, Any]:
             project_root=project_root,
             protect_profile=profile,
         )
-        stopped = decision.disposition != EvidenceDisposition.PASS
+        stopped = not decision.allows_pre_io
         matched_expectation = None
         if case.should_stop is not None:
             expectation_checked += 1

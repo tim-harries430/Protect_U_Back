@@ -9,7 +9,14 @@ _PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT not in sys.path:
     sys.path.insert(0, _PROJECT)
 
-from parallel_audit import EvidenceDisposition, EvidenceStage, EvidenceTestimony, ParallelAuditDecision  # noqa: E402
+from parallel_audit import (  # noqa: E402
+    CourtVerdict,
+    EvidenceCourt,
+    EvidenceDisposition,
+    EvidenceStage,
+    EvidenceTestimony,
+    ParallelAuditDecision,
+)
 from pub_os_authorization import (  # noqa: E402
     LeaseDecision,
     LeaseOperation,
@@ -24,15 +31,49 @@ ROOT = os.path.dirname(_PROJECT)
 
 
 def _decision(disposition=EvidenceDisposition.PASS):
+    if disposition == EvidenceDisposition.PASS:
+        ot_testimony = EvidenceTestimony(
+            stage=EvidenceStage.OT_GATE,
+            disposition=EvidenceDisposition.PASS,
+            reason_code="OT_ALLOW",
+            detail="test OT testimony",
+        )
+        decode_testimony = EvidenceTestimony(
+            stage=EvidenceStage.PATH_SCAN,
+            disposition=EvidenceDisposition.PASS,
+            reason_code="PATH_SCAN_PASS",
+            detail="test decode testimony",
+        )
+        return ParallelAuditDecision(
+            disposition=EvidenceDisposition.PASS,
+            reason_code="PATH_SCAN_PASS",
+            primary_stage=EvidenceStage.PATH_SCAN,
+            testimonies=(ot_testimony, decode_testimony),
+            ot_court=CourtVerdict(
+                EvidenceCourt.OT,
+                EvidenceDisposition.PASS,
+                "OT_ALLOW",
+                EvidenceStage.OT_GATE,
+                (ot_testimony,),
+            ),
+            decode_court=CourtVerdict(
+                EvidenceCourt.DECODE,
+                EvidenceDisposition.PASS,
+                "PATH_SCAN_PASS",
+                EvidenceStage.PATH_SCAN,
+                (decode_testimony,),
+            ),
+        )
+
     testimony = EvidenceTestimony(
         stage=EvidenceStage.PATH_SCAN,
         disposition=disposition,
-        reason_code="PATH_SCAN_PASS" if disposition == EvidenceDisposition.PASS else "PATH_HOLD",
-        detail="test testimony",
+        reason_code="PATH_HOLD",
+        detail="test hold testimony",
     )
     return ParallelAuditDecision(
         disposition=disposition,
-        reason_code="AGGREGATE_PASS" if disposition == EvidenceDisposition.PASS else "AGGREGATE_HOLD",
+        reason_code="AGGREGATE_HOLD",
         primary_stage=EvidenceStage.PATH_SCAN,
         testimonies=(testimony,),
     )
@@ -81,9 +122,29 @@ def test_non_pass_decision_cannot_issue_lease():
             object_ref=os.path.join(ROOT, "README.md"),
         )
     except ValueError as exc:
-        assert "non-PASS" in str(exc)
+        assert "dual-court PASS" in str(exc)
     else:
         raise AssertionError("non-PASS decision must not issue a lease")
+
+
+def test_forged_pass_without_dual_court_cannot_issue_lease():
+    try:
+        issue_lease_from_approval(
+            ParallelAuditDecision(
+                disposition=EvidenceDisposition.PASS,
+                reason_code="FORGED_PASS",
+                primary_stage=EvidenceStage.AGGREGATOR,
+                testimonies=(),
+            ),
+            session_id="kingdom1",
+            actor_id="agent",
+            operation=LeaseOperation.READ,
+            object_ref=os.path.join(ROOT, "README.md"),
+        )
+    except ValueError as exc:
+        assert "dual-court PASS" in str(exc)
+    else:
+        raise AssertionError("forged PASS decision must not issue a lease")
 
 
 def test_matching_syscall_event_allows_then_consumes():

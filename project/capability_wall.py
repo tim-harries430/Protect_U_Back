@@ -7,7 +7,19 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence, Set
 from urllib.parse import urlparse
 
-from ot_gate import CommandProposal, SideEffect
+from agent_control_surface import agent_control_roots, is_agent_control_surface_path
+from ot_gate import (
+    CommandProposal,
+    SideEffect,
+    delete_command_operands,
+    is_scoped_recursive_delete,
+    is_scoped_single_file_delete,
+)
+from probe_authority_surface import (
+    internal_probe_path_evidence,
+    is_internal_probe_artifact_path,
+    probe_authority_text_evidence,
+)
 from safe_path import safe_resolve
 
 
@@ -172,7 +184,7 @@ class CapabilityPolicy:
             Path(root).resolve(strict=False) / ".phi"
             for root in self.project_roots
         )
-        return explicit + project_phi
+        return explicit + project_phi + agent_control_roots(self.project_roots)
 
 
 @dataclass(frozen=True)
@@ -263,6 +275,8 @@ WRITE_TOKENS = (
     "new-item",
     "copy-item",
     " move-item",
+    "truncate",
+    "git checkout --",
     ">",
 )
 DELETE_TOKENS = (
@@ -273,6 +287,11 @@ DELETE_TOKENS = (
     "rmdir",
     " rd ",
     "clear-content",
+    "truncate",
+    " -delete",
+    "git clean",
+    "git reset --hard",
+    "git checkout --",
 )
 NETWORK_TOKENS = (
     "invoke-webrequest",
@@ -298,6 +317,7 @@ SECRET_TOKENS = (
     "id_rsa",
     "id_ed25519",
     ".env",
+    ".codex",
     "credential",
     "secret",
     "token",
@@ -317,6 +337,14 @@ EXTERNAL_PATH_TOKENS = (
     "$home",
     "%userprofile%",
 )
+IMPLICIT_CWD_TARGET_TOKENS = (
+    " git clean ",
+    " git reset --hard",
+)
+PROCESS_METADATA_KEYS = ("pub_process", "process", "p")
+PROCESS_CHANNEL_KEYS = ("channel_type", "channel", "source_channel")
+PROCESS_TIME_KEYS = ("created_at", "timestamp", "ts", "time", "time_ns", "p_enter_ts")
+PASS_ROAD_SKILL_PREFIX = "pass-road:"
 
 
 def default_agent_capability_manifest(
@@ -349,30 +377,28 @@ def default_capability_policy(
     )
 
 
-# Recursive / bulk delete markers. A delete carrying any of these is NOT a
-# single recoverable file removal and must keep the existing KILL path.
-RECURSIVE_DELETE_TOKENS = (
-    " -r", " -rf", " -fr", "-recurse", "--recursive", "rmdir", " rd ", "/s", "*", "?",
-)
-
-
-def _is_reversible_delete(proposal: CommandProposal) -> bool:
-    """
-    True only for a single-file, non-recursive delete. Boundary and protected
-    checks are left to _audit_targets (which already KILLs external and .phi
-    deletes); this only separates a recoverable one-file removal from a
-    recursive/bulk wipe. Git-tracked vs untracked is NOT yet distinguished.
-    """
-    if not proposal.target_paths:
-        return False
-    text = _normalized_command(proposal.command_text)
-    return not _contains_any(text, RECURSIVE_DELETE_TOKENS)
+# The "single recoverable in-project delete" concept now lives in ONE place --
+# ot_gate.is_scoped_single_file_delete -- consulted by both the OT boundary judge
+# and the escape hatch below, so rm AND mv are judged by the same scope/recursive/
+# in-project rule and the two judges cannot drift apart.
 
 
 def audit_capability(
     proposal: CommandProposal,
     policy: CapabilityPolicy,
 ) -> CapabilityDecision:
+    effects = _capability_effects(proposal)
+    if _requires_process_equation(proposal):
+        process_gap = _process_equation_gap(proposal, effects)
+        if process_gap:
+            return _decision(
+                CapabilityDisposition.HOLD,
+                "CAPABILITY_PROCESS_EQUATION_INCOMPLETE",
+                proposal.actor_id,
+                matched_side_effects=tuple(sorted(effects, key=lambda effect: effect.value)),
+                evidence=process_gap,
+            )
+
     manifest = policy.manifest_for(proposal.actor_id)
     if manifest is None:
         return _decision(
@@ -400,7 +426,6 @@ def audit_capability(
             evidence=("allowed_side_effects",),
         )
 
-    effects = _capability_effects(proposal)
     if not effects:
         return _decision(
             CapabilityDisposition.HOLD,
@@ -455,10 +480,60 @@ def audit_capability(
     if (
         manifest.allow_reversible_delete
         and rejected_effects == (SideEffect.DELETE,)
-        and _is_reversible_delete(proposal)
+        and (
+            is_scoped_single_file_delete(
+                proposal.command_text,
+                proposal.target_paths,
+                proposal.cwd,
+                manifest.resolved_path_roots(),
+            )
+            or is_scoped_recursive_delete(
+                proposal.command_text,
+                proposal.target_paths,
+                proposal.cwd,
+                manifest.resolved_path_roots(),
+            )
+        )
     ):
         matched_effects = matched_effects + (SideEffect.DELETE,)
         rejected_effects = ()
+
+    probe_mint_result = _audit_internal_probe_mint(
+        proposal,
+        policy,
+        effects,
+    )
+    if probe_mint_result is not None:
+        rejected_targets, evidence = probe_mint_result
+        return _decision(
+            CapabilityDisposition.KILL,
+            "CAPABILITY_PROBE_MINT_UNAUTHORIZED",
+            proposal.actor_id,
+            manifest_id=manifest.manifest_id,
+            matched_side_effects=matched_effects,
+            rejected_side_effects=rejected_effects,
+            rejected_targets=rejected_targets,
+            evidence=evidence,
+        )
+
+    agent_control_target_result = _audit_agent_control_targets(
+        proposal,
+        policy,
+        manifest,
+    )
+    if agent_control_target_result is not None:
+        disposition, reason_code, matched_targets, rejected_targets, evidence = agent_control_target_result
+        return _decision(
+            disposition,
+            reason_code,
+            proposal.actor_id,
+            manifest_id=manifest.manifest_id,
+            matched_side_effects=matched_effects,
+            rejected_side_effects=rejected_effects,
+            matched_targets=matched_targets,
+            rejected_targets=rejected_targets,
+            evidence=evidence,
+        )
 
     if rejected_effects:
         return _decision(
@@ -504,6 +579,72 @@ def audit_capability(
         manifest_id=manifest.manifest_id,
         matched_side_effects=matched_effects,
         matched_targets=tuple(proposal.target_paths),
+    )
+
+
+def _audit_internal_probe_mint(
+    proposal: CommandProposal,
+    policy: CapabilityPolicy,
+    effects: Set[SideEffect],
+) -> Optional[tuple[Sequence[str], Sequence[str]]]:
+    if not effects & {
+        SideEffect.WRITE,
+        SideEffect.DELETE,
+        SideEffect.PRIVILEGE,
+        SideEffect.AUDIT_CHANGE,
+    }:
+        return None
+
+    rejected: list[str] = []
+    evidence: list[str] = ["probe_authority_egress"]
+    for target in proposal.target_paths:
+        parsed = urlparse(str(target))
+        if parsed.scheme in {"http", "https"}:
+            continue
+        try:
+            resolved = _resolve_target(proposal.cwd, str(target))
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if is_internal_probe_artifact_path(resolved, project_roots=policy.project_roots):
+            rejected.append(str(resolved))
+            evidence.extend(internal_probe_path_evidence(resolved))
+
+    text_evidence = probe_authority_text_evidence(proposal.command_text)
+    if not rejected and text_evidence:
+        rejected.append("internal probe artifact in command text")
+        evidence.extend(text_evidence)
+
+    if not rejected:
+        return None
+    return tuple(dict.fromkeys(rejected)), tuple(dict.fromkeys(evidence))
+
+
+def _audit_agent_control_targets(
+    proposal: CommandProposal,
+    policy: CapabilityPolicy,
+    manifest: CapabilityManifest,
+) -> Optional[tuple[CapabilityDisposition, str, Sequence[str], Sequence[str], Sequence[str]]]:
+    if manifest.allow_protected_targets:
+        return None
+    rejected: list[str] = []
+    for target in proposal.target_paths:
+        parsed = urlparse(str(target))
+        if parsed.scheme in {"http", "https"}:
+            continue
+        try:
+            resolved = _resolve_target(proposal.cwd, str(target))
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if is_agent_control_surface_path(resolved, project_roots=policy.project_roots):
+            rejected.append(str(resolved))
+    if not rejected:
+        return None
+    return (
+        CapabilityDisposition.KILL,
+        "CAPABILITY_PROTECTED_TARGET_DENIED",
+        (),
+        tuple(dict.fromkeys(rejected)),
+        ("protected_control_target",),
     )
 
 
@@ -612,14 +753,20 @@ def _audit_targets(
         resolved_text = str(resolved)
         if (
             not manifest.allow_protected_targets
-            and any(_is_within(resolved, root) for root in protected_roots)
+            and (
+                any(_is_within(resolved, root) for root in protected_roots)
+                or is_agent_control_surface_path(
+                    resolved,
+                    project_roots=policy.project_roots,
+                )
+            )
         ):
             return (
                 CapabilityDisposition.KILL,
                 "CAPABILITY_PROTECTED_TARGET_DENIED",
                 tuple(matched_targets),
                 (resolved_text,),
-                ("protected_phi_target",),
+                ("protected_control_target",),
             )
 
         if any(_is_within(resolved, root) for root in path_roots):
@@ -701,6 +848,73 @@ def _capability_effects(proposal: CommandProposal) -> Set[SideEffect]:
     return effects
 
 
+def _requires_process_equation(proposal: CommandProposal) -> bool:
+    return "pub_process" in proposal.raw_payload
+
+
+def _process_equation_gap(
+    proposal: CommandProposal,
+    effects: Set[SideEffect],
+) -> tuple[str, ...]:
+    missing: list[str] = []
+    if not proposal.actor_id.strip():
+        missing.append("actor_id")
+    if not proposal.cwd.strip():
+        missing.append("cwd")
+    if not proposal.command_text.strip():
+        missing.append("command_text")
+    if not effects:
+        missing.append("effect")
+    if not _process_field(proposal, PROCESS_CHANNEL_KEYS):
+        missing.append("channel_type")
+    if not _process_field(proposal, PROCESS_TIME_KEYS):
+        missing.append("process_time")
+    if not _process_target_complete(proposal, effects):
+        missing.append("target")
+    return tuple(missing)
+
+
+def _process_target_complete(proposal: CommandProposal, effects: Set[SideEffect]) -> bool:
+    if proposal.target_paths:
+        return True
+    if effects <= {SideEffect.READ}:
+        return bool(proposal.cwd.strip())
+    if effects & {SideEffect.WRITE, SideEffect.DELETE, SideEffect.SECRET_ACCESS, SideEffect.AUDIT_CHANGE}:
+        if _contains_any(_normalized_command(proposal.command_text), IMPLICIT_CWD_TARGET_TOKENS):
+            return True
+        # pub's bash parser drops bare dir names (`rm -rf build` -> no target_path), so
+        # the target IS known (in the command) even when target_paths is empty. A
+        # dangerous target is still caught downstream by the scope checks; here we only
+        # confirm the process is COMPLETE (we can see what it acts on).
+        return bool(delete_command_operands(proposal.command_text))
+    if SideEffect.NETWORK in effects:
+        return False
+    return True
+
+
+def _process_field(proposal: CommandProposal, keys: Sequence[str]) -> str:
+    for source in _process_sources(proposal):
+        for key in keys:
+            value = source.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+    return ""
+
+
+def _process_sources(proposal: CommandProposal) -> tuple[Mapping[str, Any], ...]:
+    raw = proposal.raw_payload
+    sources: list[Mapping[str, Any]] = []
+    for key in PROCESS_METADATA_KEYS:
+        value = raw.get(key)
+        if isinstance(value, Mapping):
+            sources.append(value)
+    metadata = raw.get("metadata")
+    if isinstance(metadata, Mapping):
+        sources.append(metadata)
+    sources.append(raw)
+    return tuple(sources)
+
+
 def _audit_skill_contracts(
     proposal: CommandProposal,
     manifest: CapabilityManifest,
@@ -710,8 +924,6 @@ def _audit_skill_contracts(
         return None
 
     trace = _skill_trace(proposal.raw_payload)
-    required_ids = set(contracts)
-    required_ids.update(_trace_values(trace, "required_skill_ids"))
     used_ids = (
         _trace_values(trace, "used_skill_ids")
         | _trace_values(trace, "skill_ids")
@@ -720,6 +932,14 @@ def _audit_skill_contracts(
         | _trace_values(proposal.raw_payload, "skill_ids")
         | _trace_values(proposal.raw_payload, "skill_id")
     )
+    contract_ids = set(contracts)
+    required_ids = {
+        skill_id
+        for skill_id in contract_ids
+        if not _optional_pass_road_skill(skill_id)
+    }
+    required_ids.update(_trace_values(trace, "required_skill_ids"))
+    required_ids.update(used_ids & contract_ids)
 
     missing_skills = tuple(sorted(required_ids - used_ids))
     if missing_skills:
@@ -810,6 +1030,10 @@ def _audit_skill_contracts(
     return None
 
 
+def _optional_pass_road_skill(skill_id: str) -> bool:
+    return _normalize_skill_token(skill_id).startswith(PASS_ROAD_SKILL_PREFIX)
+
+
 def _audit_skill_scan(
     trace: Mapping[str, Any],
 ) -> Optional[tuple[CapabilityDisposition, str, Sequence[str]]]:
@@ -897,8 +1121,8 @@ def _resolve_target(cwd: str, target_path: str) -> Path:
 
 
 def _is_within(path: Path, root: Path) -> bool:
-    path_text = normcase(normpath(str(path)))
-    root_text = normcase(normpath(str(root))).rstrip("\\/")
+    path_text = normcase(normpath(str(path))).casefold()
+    root_text = normcase(normpath(str(root))).rstrip("\\/").casefold()
     return (
         path_text == root_text
         or path_text.startswith(root_text + "\\")

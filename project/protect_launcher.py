@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -58,6 +60,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "codex":
         return run_codex_connector(args)
+
+    if args.command == "run":
+        return run_pub_run(args)
 
     return run_menu()
 
@@ -129,8 +134,15 @@ def build_parser() -> argparse.ArgumentParser:
         )
         item.add_argument(
             "--python-bin",
-            default="python3",
-            help="Python executable as seen by Claude Code.",
+            default=None,
+            help="Python executable as seen by Claude Code; blank auto-detects per --platform.",
+        )
+        item.add_argument(
+            "--platform",
+            choices=("auto", "windows", "posix"),
+            default="auto",
+            help="Target platform for the hook command. auto matches this machine; "
+            "windows uses py -3 and C:\\ paths; posix uses python3 and /mnt paths.",
         )
         item.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
 
@@ -154,6 +166,20 @@ def build_parser() -> argparse.ArgumentParser:
         )
         item.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
 
+    run_p = subparsers.add_parser(
+        "run",
+        help="Run an agent inside the PUB-OS prison (sandbox + window + eyes + warden).",
+    )
+    run_p.add_argument(
+        "--project-root",
+        help="Project root the box is confined to (default: launcher package root).",
+    )
+    run_p.add_argument(
+        "agent",
+        nargs=argparse.REMAINDER,
+        help="The agent command to run inside the box, e.g. run python3 -c \"print(1)\".",
+    )
+
     return parser
 
 
@@ -173,6 +199,7 @@ def run_menu() -> int:
         print("8. Connect Kimi CLI")
         print("9. Connect Claude Code")
         print("10. Connect Codex CLI")
+        print("11. Run agent in the PUB-OS prison (sandbox)")
         print("0. Exit")
         choice = input("> ").strip()
 
@@ -200,6 +227,8 @@ def run_menu() -> int:
             return_code = run_claude_code_menu()
         elif choice == "10":
             return_code = run_codex_menu()
+        elif choice == "11":
+            return_code = run_pub_run_menu()
         elif choice == "0":
             return 0
         else:
@@ -296,13 +325,15 @@ def run_claude_code_menu() -> int:
         return 1
     project = input("Claude Code project root (blank = current directory): ").strip().strip('"')
     protect_root = input("Protect U Back root visible to Claude Code (blank = launcher root): ").strip().strip('"')
-    python_bin = input("Python command visible to Claude Code (blank = python3): ").strip()
+    platform = input("Platform [auto/windows/posix] (blank = auto): ").strip().lower()
+    python_bin = input("Python command visible to Claude Code (blank = auto-detect for platform): ").strip()
     return run_claude_code_connector(
         argparse.Namespace(
             claude_code_command=command,
             claude_project=project or ".",
             protect_root=protect_root or None,
-            python_bin=python_bin or "python3",
+            python_bin=python_bin or None,
+            platform=platform or "auto",
             json=False,
         )
     )
@@ -331,6 +362,48 @@ def run_codex_menu() -> int:
             python_bin=python_bin or "python3",
             json=False,
         )
+    )
+
+
+def _to_wsl_path(path: str) -> str:
+    """C:\\dev\\sp -> /mnt/c/dev/sp ; already-POSIX paths pass through."""
+    match = re.match(r"^([A-Za-z]):[\\/](.*)$", str(path))
+    if match:
+        return "/mnt/" + match.group(1).lower() + "/" + match.group(2).replace("\\", "/")
+    return str(path).replace("\\", "/")
+
+
+def run_pub_run(args: argparse.Namespace) -> int:
+    agent = [item for item in (getattr(args, "agent", None) or []) if item != "--"]
+    if not agent:
+        print('No agent command given. Example: run python3 -c "print(1)"')
+        return 2
+    project_root = getattr(args, "project_root", None) or str(PACKAGE_ROOT)
+    if sys.platform.startswith("win"):
+        # the box needs Linux + bwrap -> run the orchestrator under WSL2.
+        inner = "cd {c} && python3 pub_run.py {p} {a}".format(
+            c=shlex.quote(_to_wsl_path(str(CODE_ROOT))),
+            p=shlex.quote(_to_wsl_path(project_root)),
+            a=" ".join(shlex.quote(part) for part in agent),
+        )
+        return subprocess.run(["wsl", "-e", "bash", "-lc", inner], check=False).returncode
+    return subprocess.run(
+        [sys.executable, str(CODE_ROOT / "pub_run.py"), project_root, *agent],
+        check=False,
+    ).returncode
+
+
+def run_pub_run_menu() -> int:
+    print()
+    print("Run agent in the PUB-OS prison")
+    print("(box: no network, fs = project root only; window + eyes + warden mediate)")
+    project = input("Project root (blank = launcher package root): ").strip().strip('"')
+    command = input('Agent command to run inside the box (e.g. python3 -c "print(1)"): ').strip()
+    if not command:
+        print("No agent command provided.")
+        return 1
+    return run_pub_run(
+        argparse.Namespace(project_root=project or None, agent=shlex.split(command))
     )
 
 
@@ -450,22 +523,26 @@ def run_claude_code_connector(args: argparse.Namespace) -> int:
         verify_claude_code,
     )
 
+    platform = getattr(args, "platform", "auto")
     operations = {
         "status": lambda: status_claude_code(
             args.claude_project,
             protect_root=args.protect_root,
             python_bin=args.python_bin,
+            platform=platform,
         ),
         "connect": lambda: connect_claude_code(
             args.claude_project,
             protect_root=args.protect_root or CODE_ROOT,
             python_bin=args.python_bin,
+            platform=platform,
         ),
         "disconnect": lambda: disconnect_claude_code(args.claude_project),
         "verify": lambda: verify_claude_code(
             args.claude_project,
             protect_root=args.protect_root or CODE_ROOT,
             python_bin=args.python_bin,
+            platform=platform,
         ),
     }
     try:

@@ -10,8 +10,10 @@ from ot_gate import CommandProposal
 from transition_xray import (
     DEFAULT_MAX_HASH_BYTES,
     TransitionXrayFrame,
+    build_transition_access_witness,
     compare_transition_xray,
     scan_transition_xray,
+    transition_access_witness_evidence,
 )
 from xray_field import XrayFieldComparison, sample_xray_potential_pair
 from xray_prison import XrayPrisonBoundary, XrayPrisonCustody, admit_xray_frame, seal_xray_pair
@@ -70,10 +72,17 @@ class XrayTransportSeal:
     custody: XrayPrisonCustody
     field: XrayFieldComparison
     transition_evidence: Sequence[str] = field(default_factory=tuple)
+    access_witness: Mapping[str, Any] = field(default_factory=dict)
     transport_id: str = TRANSPORT_ID
     authority: str = TRANSPORT_AUTHORITY
     sealed: bool = True
     testimony_only: bool = True
+    # True iff every mutation finding is exactly what the proposal DECLARED it would
+    # do (a write/delete changing its declared targets = the job, not a substitution).
+    # Read by xray_review.seal_disguise to stop a benign write from quarantining
+    # itself. Deliberately NOT serialised into to_dict/to_evidence, so transport_hash
+    # is unchanged. Default False = conservative (treat as before) when uncomputed.
+    expected_mutation: bool = False
 
     def __post_init__(self):
         object.__setattr__(
@@ -81,6 +90,7 @@ class XrayTransportSeal:
             "transition_evidence",
             tuple(str(item) for item in self.transition_evidence),
         )
+        object.__setattr__(self, "access_witness", dict(self.access_witness))
 
     @property
     def boundary_hash(self) -> str:
@@ -131,6 +141,7 @@ class XrayTransportSeal:
             "route": "main_process_observation_channel",
             "custody": self.custody.to_dict(),
             "field": self.field.to_dict(),
+            "access_witness": dict(self.access_witness),
             "evidence": self.to_evidence(include_hash=False),
         }
         if include_hash:
@@ -154,6 +165,7 @@ class XrayTransportSeal:
         return (
             evidence
             + tuple(self.transition_evidence)
+            + transition_access_witness_evidence(self.access_witness)
             + tuple(self.custody.to_evidence())
             + tuple(self.field.to_evidence())
         )
@@ -177,6 +189,33 @@ def open_xray_transport(
     )
 
 
+# A mutating effect (write/delete) DECLARED by the proposal vouches for the
+# transition's content findings: the targets changing IS the job. A delete shows up
+# as HASH_MUTATED (the hash goes to a missing sentinel), not a distinct DELETED
+# finding, so we do NOT match finding type to effect -- declaring ANY mutating effect
+# is enough. ACTION_ID_MISMATCH (a torn observation window) is never vouched. A
+# declared-READ op that mutated has no mutating effect -> unexpected -> the seal still
+# quarantines. Identity swaps (pointer/alias/container-escape) ride a SEPARATE review
+# axis (single_frame_disguise on the enter frame), unaffected by this.
+_MUTATING_EFFECTS = frozenset({"write", "delete"})
+
+
+def _mutation_is_declared(pair: Any, proposal: CommandProposal) -> bool:
+    findings = tuple(getattr(pair, "findings", ()) or ())
+    if not findings:
+        return False
+    if any(
+        str(getattr(finding, "finding_type", "")) == "ACTION_ID_MISMATCH"
+        for finding in findings
+    ):
+        return False
+    declared = {
+        str(getattr(effect, "value", effect)).lower()
+        for effect in getattr(proposal, "expected_side_effects", ()) or ()
+    }
+    return bool(declared & _MUTATING_EFFECTS)
+
+
 def close_xray_transport(
     handle: XrayTransportHandle,
     proposal: CommandProposal,
@@ -191,11 +230,14 @@ def close_xray_transport(
     pair = compare_transition_xray(handle.enter_frame, exit_frame)
     custody = seal_xray_pair(pair, boundary=handle.boundary)
     field = sample_xray_potential_pair(pair, boundary=handle.boundary)
+    access_witness = build_transition_access_witness(pair, proposal)
     return XrayTransportSeal(
         proposal_id=handle.proposal_id,
         custody=custody,
         field=field,
         transition_evidence=pair.to_evidence(),
+        access_witness=access_witness,
+        expected_mutation=_mutation_is_declared(pair, proposal),
     )
 
 
