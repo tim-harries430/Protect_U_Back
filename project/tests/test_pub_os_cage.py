@@ -78,7 +78,7 @@ def test_pub_source_inside_project_is_rejected():
     try:
         CageSpec(project_root=PROJ, pub_source_dir=f"{PROJ}/pub")
     except ValueError as exc:
-        assert "inside project_root" in str(exc)
+        assert "writable bind" in str(exc)
     else:
         raise AssertionError("pub source inside the writable project must be rejected")
 

@@ -294,6 +294,7 @@ def sample_xray_object_state(
         resolved=resolved,
         boundary_root=boundary_root_path,
         nlink=nlink,
+        object_type=object_type,
     )
     state = XrayObjectState(
         object_ref=str(resolved if resolved is not None else candidate),
@@ -559,6 +560,7 @@ def _boundary_metric(
     resolved: Path | None,
     boundary_root: Path | None,
     nlink: int | None,
+    object_type: str | None = None,
 ) -> BoundaryMetric:
     contained: tuple[str, ...] = ()
     escaped: tuple[str, ...] = ()
@@ -572,7 +574,12 @@ def _boundary_metric(
             escaped = (str(resolved),)
             distance[str(resolved)] = 1.0
     alias_refs = ()
-    if nlink is not None and nlink > 1:
+    # A directory ALWAYS has st_nlink >= 2 ('.' + its parent's entry + one per
+    # subdirectory), so a directory's nlink > 1 is normal structure, NEVER a hardlink
+    # alias. Only a NON-directory with nlink > 1 is a genuine multi-name (hardlink)
+    # alias signal. Without this type guard, every existing dir (e.g. the target of
+    # `mkdir -p <existing>`) was falsely flagged as an alias.
+    if object_type != "directory" and nlink is not None and nlink > 1:
         alias_refs = (f"nlink:{nlink}:{resolved}",)
     return BoundaryMetric(
         boundary_id="filesystem_boundary_v0",
@@ -583,7 +590,7 @@ def _boundary_metric(
         alias_refs=alias_refs,
         distance=distance,
         details={
-            "alias_detection_semantics": "nlink_gt_1_is_alias_signal_nlink_1_is_not_proof",
+            "alias_detection_semantics": "nondir_nlink_gt_1_is_alias_signal_dir_nlink_is_structural",
         },
     )
 

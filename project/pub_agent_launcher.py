@@ -4,7 +4,7 @@ import argparse
 import json
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -86,6 +86,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_PLATFORM,
         help="Platform for Claude Code hook commands.",
     )
+    cc.add_argument(
+        "--cage",
+        action="store_true",
+        help="Confine Claude Code in the bwrap cage (Linux/WSL2 only). Fail-closed: if "
+             "no cage can be built the launcher STOPS rather than run uncaged.",
+    )
     cc.add_argument("agent_args", nargs=argparse.REMAINDER, help="Arguments passed to Claude Code.")
 
     cd = subparsers.add_parser("cd", help="Connect and start Codex CLI under PUB.")
@@ -98,16 +104,40 @@ def run_cc(args: argparse.Namespace, deps: LauncherDeps) -> int:
     project_root = _path_arg(args.project_root)
     protect_root = _protect_root(args.protect_root)
     python_bin = args.python_bin
+    cc_command = args.cc_command
+    platform = args.platform
+
+    if getattr(args, "cage", False):
+        # Confine claude in the bwrap cage (Linux/WSL2). Fail-closed (wall-first): if
+        # the cage cannot be built we STOP -- never silently fall back to uncaged. Every
+        # bind path is derived from the runtime environment, so this reproduces on any
+        # customer's Linux/WSL2 box. The cage is Linux, so its hook must be posix.
+        from pub_os_cage import CageUnavailable, cage_available, discover_cc_cage_spec, make_cage_spawn
+
+        usable, reason = cage_available()
+        if not usable:
+            raise LauncherError(
+                f"--cage requested but no cage on this host ({reason}). Drop --cage to run "
+                f"gate-only (the hook still judges; there is no OS containment on this platform)."
+            )
+        try:
+            spec, claude_bin = discover_cc_cage_spec(project_root, pub_source_dir=protect_root)
+        except CageUnavailable as exc:
+            raise LauncherError(f"--cage: {exc}")
+        cc_command = claude_bin
+        platform = "posix"
+        deps = replace(deps, spawn=make_cage_spawn(spec))
+        _emit("cage", {"state": "CAGE_READY", "reason_code": reason}, args.json)
 
     if not args.no_connect:
         _emit(
             "connect",
-            deps.cc_connect(project_root, protect_root=protect_root, python_bin=python_bin, platform=args.platform),
+            deps.cc_connect(project_root, protect_root=protect_root, python_bin=python_bin, platform=platform),
             args.json,
         )
         _emit("gate", deps.cc_gate(project_root, enabled=True), args.json)
     if not args.no_verify:
-        verify = deps.cc_verify(project_root, protect_root=protect_root, python_bin=python_bin, platform=args.platform)
+        verify = deps.cc_verify(project_root, protect_root=protect_root, python_bin=python_bin, platform=platform)
         _require_preflight_blocked("cc", verify)
         _emit("verify", verify, args.json)
 
@@ -118,12 +148,12 @@ def run_cc(args: argparse.Namespace, deps: LauncherDeps) -> int:
         session_id=args.session_id,
         cwd=_path_arg(args.cwd) if args.cwd else None,
         agent_args=_cc_args(args.agent_args),
-        cc_command=args.cc_command,
+        cc_command=cc_command,
         cc_status_fn=lambda *call_args, **kwargs: deps.cc_status(
             project_root,
             protect_root=protect_root,
             python_bin=python_bin,
-            platform=args.platform,
+            platform=platform,
         ),
         protect_root=protect_root,
         python_bin=python_bin or "python3",

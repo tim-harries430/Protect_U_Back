@@ -14,7 +14,7 @@ from typing import Any, Sequence
 
 from adapter_wall import ActionDomain, ActionEnvelope, AdapterActionType
 from harness_adapter import infer_action_domain, infer_action_type, infer_declared_scope
-from llm_channel import ChannelType, safe_git_write
+from llm_channel import ChannelType, safe_git_write, safe_in_project_archive_or_link
 from ot_gate import (
     CommandProposal,
     DeclaredScope,
@@ -150,6 +150,17 @@ def run_pretool_admission(
         output is not None
         and decision.reason_code == "COMMAND_SURFACE_OPAQUE_EXECUTION"
         and safe_git_write(action.command_text)
+    ):
+        output = None
+
+    # ②a archive/link relax (pass-road): a single tar/zip/ln whose EVERY operand is
+    # in-project and touches no protected surface is held ONLY by the OPAQUE wall.
+    # Scope-gated so it is safe even uncaged; the cage (when present) is the backstop.
+    # Same SOLE-OPAQUE gate -- external/secret/destructive outrank OPAQUE and stay.
+    if (
+        output is not None
+        and decision.reason_code == "COMMAND_SURFACE_OPAQUE_EXECUTION"
+        and safe_in_project_archive_or_link(action.command_text, str(project_root or ""))
     ):
         output = None
 
@@ -1027,7 +1038,19 @@ def _single_bash_segment_targets_and_effects(
         effects.update({SideEffect.WRITE, SideEffect.DELETE})
         targets.extend(_path_like_args(args))
     elif verb in {"chmod", "chown", "icacls"}:
-        effects.add(SideEffect.PRIVILEGE)
+        # chown/icacls (ownership/ACL) and setuid/setgid chmod are privilege-relevant.
+        # A plain in-project chmod (ordinary permission bits, no setuid/setgid) is a
+        # metadata WRITE, not escalation -- the in-project scope + the capability path-
+        # root check contain it. Only the MODE arg (first non-flag) is inspected, so a
+        # filename containing "+s" is not mistaken for setuid. (chmod 777 stays
+        # PRIVILEGE via the catch-all below.)
+        _mode = next((str(a) for a in args if not str(a).startswith("-")), "").lower()
+        _privileged = verb != "chmod" or (
+            "+s" in _mode
+            or "=s" in _mode
+            or (_mode.isdigit() and len(_mode) == 4 and _mode[0] in "234567")
+        )
+        effects.add(SideEffect.PRIVILEGE if _privileged else SideEffect.WRITE)
         targets.extend(_path_like_or_opaque_args(args))
     elif _direct_script_target(raw_verb):
         targets.append(_direct_script_target(raw_verb))
@@ -1850,9 +1873,10 @@ def _autopsy_path(cid: str, env: Mapping[str, str]) -> Path:
 
 
 _BACKFILL_JOURNAL_SCHEMA = "pub_backfill_journal_v0"
-# Oversize pre-images are NOT copied (cost/latency on the hot path). The cap is a
-# coverage boundary, never a silent drop: oversize destructive targets are recorded
-# in the manifest + witness log as NOT reversible so no caller can overclaim "回点".
+# Oversize pre-images are NOT copied (cost/latency on the hot path). For a WRITE the
+# cap is just a coverage boundary (additive, allowed). For a DESTRUCTIVE op it is
+# fail-closed: a target too big to journal cannot be made recoverable, so the delete
+# is HELD rather than allowed unrecoverably.
 _BACKFILL_SNAPSHOT_CAP_BYTES = 16 * 1024 * 1024  # 16 MiB
 
 
@@ -1961,9 +1985,12 @@ def _backfill_snapshot_file(
         entry["snapshot"] = "STAT_FAILED"
         return entry, False, False
     if size > _BACKFILL_SNAPSHOT_CAP_BYTES:
+        # A destructive op whose pre-image is too big to journal is un-backfillable
+        # -> HOLD (fail-closed, consistent with "allow a delete only if recoverable").
+        # A non-destructive oversize WRITE is additive and stays allowed.
         entry["snapshot"] = "OVERSIZE_NOT_JOURNALLED"
         entry["size"] = size
-        return entry, False, destructive
+        return entry, destructive, destructive
     blob = jdir / (hashlib.sha256(str(resolved).encode("utf-8")).hexdigest() + ".blob")
     try:
         data = resolved.read_bytes()

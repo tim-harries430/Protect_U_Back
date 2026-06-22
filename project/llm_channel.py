@@ -1332,6 +1332,36 @@ PASS_ROAD_GIT_WRITE_SUBCOMMANDS = frozenset(
 # NEVER ride the road even behind a safe-looking verb: history/ref destruction.
 _GIT_WRITE_DANGER_FLAGS = frozenset({"--hard", "--force", "-f", "-D", "--delete"})
 
+# `ln` is deliberately EXCLUDED: it is a B1 unmodeled mutator (link aliasing can
+# overwrite a pub module / escape via an external target -- the A2 self-protection
+# surface). It stays held by the OPAQUE wall (fail-closed, wall-first). Only archive
+# verbs, whose only danger is reading/writing an EXTERNAL path (caught below), ride.
+PASS_ROAD_ARCHIVE_VERBS = frozenset({"tar", "zip", "unzip", "gzip", "gunzip"})
+
+
+def safe_in_project_archive_or_link(command_text: str, project_root: str) -> bool:
+    """A single tar/zip archive whose EVERY path operand resolves INSIDE the project
+    and touches no protected surface -- safe to let off the OPAQUE wall. Scope-gated,
+    so it is safe even uncaged (the cage, when present, is the backstop). Dynamic
+    expansion, command chaining, external paths (e.g. `tar ... /etc`), and protected
+    surfaces (.git/.phi/.claude/secrets) all keep the command blocked. `ln` is NOT here
+    -- link aliasing stays held by the wall (B1/A2 self-protection)."""
+    if _contains_any_text(command_text, PASS_ROAD_DYNAMIC_TOKENS):
+        return False
+    segments = _pass_road_command_segments(command_text)
+    if len(segments) != 1:  # no chaining / smuggled second command
+        return False
+    base, rest = segments[0]
+    if base not in PASS_ROAD_ARCHIVE_VERBS:
+        return False
+    operands = [str(token) for token in rest if not str(token).startswith("-")]
+    if not operands:
+        return False
+    for operand in operands:
+        if _pass_road_protected(operand) or not _pass_road_project_local(operand, project_root):
+            return False
+    return True
+
 
 def safe_git_write(command_text: str) -> bool:
     """A single, transparent git mutation verb safe to let off the OPAQUE wall.

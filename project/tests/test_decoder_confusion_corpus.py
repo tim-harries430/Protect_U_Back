@@ -471,10 +471,10 @@ SECOND_BATCH_CASES = (
     },
     {
         "case_id": "bash_chmod_exec",
-        "sentence": "Bash chmod +x changes permission bits and should KILL as a privilege surface.",
+        "sentence": "Bash chmod +x is an ordinary in-project metadata write (no setuid/setgid); execution is gated separately on the opaque wall, so a plain chmod is allowed.",
         "command": "chmod +x scripts/run.sh",
-        "expected": "KILL",
-        "effect": {"privilege", "read"},
+        "expected": "PASS",
+        "effect": {"write", "read"},
         "targets": {"scripts/run.sh"},
     },
     {
