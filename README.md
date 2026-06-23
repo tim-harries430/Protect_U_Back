@@ -417,3 +417,12 @@ Protect U Back is a local pre-I/O audit gate and PUB-OS-like supervisor for AI a
 ## Personal Preference
 
 U better Protect ya back.
+
+
+## Copyright
+
+Copyright (c) 2026 Protect U Back contributors. All rights reserved unless a separate `LICENSE` file states otherwise.
+
+Protect U Back is shared publicly so reviewers can inspect, test, and critique the design.. No permission is granted to redistribute, sublicense, commercialize, or incorporate this work into another product without explicit written permission from the copyright holder.
+
+This project is experimental software. It is provided "as is", without warranty of any kind. Protect U Back is a local agent audit gate and should not be represented as a replacement for an operating-system sandbox, endpoint security product, legal compliance system, or production security boundary.
