@@ -109,7 +109,6 @@ def _scene_anchors(project_root: str) -> tuple[tuple[str, ...], tuple[str, ...]]
     #              We watch existence/type ONLY: a top-level file vanishing or
     #              flipping to a symlink/dir is suspicious; an ordinary edit is not.
     content: list[str] = []
-    structure: list[str] = []
     try:
         pub = sorted(
             path
@@ -119,16 +118,14 @@ def _scene_anchors(project_root: str) -> tuple[tuple[str, ...], tuple[str, ...]]
         content.extend(str(path) for path in pub[:MAX_PUB_ANCHORS])
     except OSError:
         pass
-    try:
-        skeleton = sorted(
-            path
-            for path in Path(project_root).iterdir()
-            if not path.name.startswith(".") and path.name not in _SKELETON_EXCLUDE
-        )[:MAX_PROJECT_SKELETON]
-        structure.extend(str(path) for path in skeleton)
-    except OSError:
-        pass
-    return tuple(dict.fromkeys(content)), tuple(dict.fromkeys(structure))
+    # The project skeleton is deliberately NOT watched. The agent's job is to reshape
+    # it (create / delete / rename top-level files), so a vanished entry is almost
+    # always pub's OWN previously-approved mutation -- not an out-of-band side-channel.
+    # Watching it flagged pub against itself: a benign `rm <top-level file>` HELD the
+    # NEXT action with SCENE_DISCONTINUOUS. The content anchors above (pub's runtime
+    # modules, which must NOT change mid-session) carry the real tamper signal; the
+    # skeleton added only false positives.
+    return tuple(dict.fromkeys(content)), ()
 
 
 def _content_token(state: Any) -> str:
