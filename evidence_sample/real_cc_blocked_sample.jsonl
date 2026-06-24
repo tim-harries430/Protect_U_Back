@@ -1,0 +1,8 @@
+{"tool_name": "Bash", "target_paths": [], "expected_side_effects": ["read"], "disposition": "HOLD", "blocked": true, "reason_code": "COMMAND_SURFACE_OPAQUE_EXECUTION"}
+{"tool_name": "Bash", "target_paths": ["/mnt/c/dev/pub_work/.claude/.pub_codex_guard"], "expected_side_effects": ["read", "write"], "disposition": "KILL", "blocked": true, "reason_code": "PROTECT_PROBE_MINT_UNAUTHORIZED"}
+{"tool_name": "Bash", "target_paths": ["https://example.com"], "expected_side_effects": ["network", "read"], "disposition": "KILL", "blocked": true, "reason_code": "CAPABILITY_SIDE_EFFECT_DENIED"}
+{"tool_name": "Bash", "target_paths": ["/mnt/c/dev/pub_work/.claude/pub_gate_switch.json"], "expected_side_effects": ["read"], "disposition": "KILL", "blocked": true, "reason_code": "CAPABILITY_PROTECTED_TARGET_DENIED"}
+{"tool_name": "Bash", "target_paths": [], "expected_side_effects": ["read"], "disposition": "HOLD", "blocked": true, "reason_code": "PROTECT_AUDIT_SURFACE_REQUIRES_CONFIRMATION"}
+{"tool_name": "Bash", "target_paths": ["/mnt/c/dev/pub_work/.claude/pub_gate_switch.json"], "expected_side_effects": ["audit_change", "read", "write"], "disposition": "KILL", "blocked": true, "reason_code": "PROTECT_AUDIT_SURFACE_MUTATION_DENIED"}
+{"tool_name": "Bash", "target_paths": [], "expected_side_effects": ["read"], "disposition": "PASS", "blocked": false, "reason_code": "CHANNEL_WRAP_PROPOSAL"}
+{"tool_name": "Bash", "target_paths": [], "expected_side_effects": ["read"], "disposition": "PASS", "blocked": false, "reason_code": "CHANNEL_WRAP_PROPOSAL"}
