@@ -573,6 +573,40 @@ def _findings_for(
             )
         )
 
+    # .git EXECUTABLE surface (hooks/config/info) is write-protected on EVERY path
+    # that funnels through this judge -- the cc hook AND the codex/soft-link gate --
+    # because .git/hooks/* run arbitrary code on ordinary git operations, and
+    # .git/config (core.hooksPath, alias.*, fsmonitor) and .git/info/* (filter
+    # drivers) point at code too. Blocking the PLANT here is the precondition for
+    # ever relaxing safe git-write off the OPAQUE wall: an agent cannot seed an
+    # executable hook for a later commit to trigger. Git's DATA surface
+    # (index/objects/refs) is untouched, so `git add`/`commit` are unaffected;
+    # only echo/cp/sed planting into the executable surface is denied. This lives in
+    # the shared judge (single source of truth) so the codex path can no longer be a
+    # blind spot the cc path already covered.
+    if effects & {SideEffect.WRITE, SideEffect.DELETE}:
+        git_surface = tuple(
+            str(path)
+            for path in paths
+            if _is_git_executable_surface(path, profile.resolved_project_roots())
+        )
+        normalized = text.lower().replace("\\", "/")
+        git_text = tuple(
+            tok
+            for tok in (".git/hooks", ".git/config", ".git/info/")
+            if tok in normalized
+        )
+        if git_surface or git_text:
+            findings.append(
+                _finding(
+                    ProtectSurface.AUDIT_STORE,
+                    ProtectScanSeverity.KILL,
+                    "PROTECT_GIT_SURFACE_WRITE_DENIED",
+                    "no write may plant into .git's executable surface (hooks/config/info)",
+                    tuple(dict.fromkeys((*git_surface, *git_text))),
+                )
+            )
+
     if effects & {
         SideEffect.WRITE,
         SideEffect.DELETE,
@@ -1463,6 +1497,23 @@ def _is_within(path: Path, root: Path) -> bool:
         or path_text.startswith(root_text + "\\")
         or path_text.startswith(root_text + "/")
     )
+
+
+def _is_git_executable_surface(path: Path, project_roots: Sequence[Path]) -> bool:
+    """A resolved target under any audited project's .git executable surface:
+    .git/hooks/* (run on git ops), .git/config (core.hooksPath/alias), or
+    .git/info/* (filter drivers). Git's DATA (index/objects/refs) is NOT here, so
+    ordinary `git add`/`commit` -- which pub models as touching .git/index, .git --
+    is unaffected; only a plant into the executable surface matches."""
+    for root in project_roots:
+        git = Path(root) / ".git"
+        if (
+            _is_within(path, git / "hooks")
+            or _is_within(path, git / "info")
+            or _is_within(path, git / "config")
+        ):
+            return True
+    return False
 
 
 def _matches_surface(
