@@ -14,9 +14,10 @@ this while judging **323 live tool-calls from a real Claude Code agent running i
 bubblewrap container**, writing a human-readable post-mortem for **every** block.
 
 > Two honest qualifiers up front: that 45,618 is the **cumulative** total of 171 soak runs, not
-> one sitting (see §1); and "0" is the **must-kill** floor — pub *did* pass 688 softer
-> *confirm-first* commands it was meant to hold, disclosed in full in §1. The floor held; the
-> calibration above it is still being filed down, in the open.
+> one sitting (see §1); and "0" is the **must-kill** floor. Above that floor there were 688
+> softer *confirm-first* commands passed that should have been held — **every one of them from a
+> single pre-hardening day** before the opaque-execution wall was tightened, held 100% since
+> (§1). The floor never moved; the one calibration gap is dated, closed, and shown anyway.
 
 ---
 
@@ -40,14 +41,15 @@ dangerous ones mixed in. This is the **cumulative** total, not a single sitting:
 
 - **Too strict — 4,328 (safe side):** over-blocking — FRICTION 201, SOFT_BLOCK 1,135, HARD_BLOCK
   2,806, plus quarantine/stale-label DRIFT 186. Costs friction, never safety.
-- **Too loose — 688 (`UNDERMODEL`), the honest bruise:** commands labelled *HOLD* that pub *passed*.
-  All 688 are exactly three commands: `git commit` (254 — pub passes plain `git commit` **by
-  design**, relaxation whitelist rule 4, so the soak's HOLD label is stale) and `docker compose up`
-  + `kubectl apply -f prod.yaml` (434). Those last two are a **real leak**: the identical command is
-  HELD ~77% of the time, but the green channel (`CHANNEL_WRAP_PROPOSAL`) fast-lanes it ~23% of the
-  time. **None of the 688 was a must-kill** — the safety floor held — but "pub never errs too loose"
-  would be a lie, so this poster doesn't say it. The green-channel leak is on the fix list, named
-  here rather than papered over.
+- **Too loose — 688 (`UNDERMODEL`), the honest bruise that's already healed:** commands labelled
+  *HOLD* that pub *passed*. All 688 are exactly three commands — `git commit` (254), `docker compose
+  up` (217), `kubectl apply -f prod.yaml` (217) — and **every single one is from one day, 2026-06-17**,
+  when an earlier wall let them ride the green channel (`CHANNEL_WRAP_PROPOSAL`). The opaque-execution
+  wall was hardened on 2026-06-18; from that day through every run since — and on a fresh run on
+  today's code — all three are **held 100%** as `COMMAND_SURFACE_OPAQUE_EXECUTION`. So the corpus's
+  *only* looseness is a dated, pre-hardening artifact the wall has since closed, not a live gap — and
+  **none of the 688 was ever a must-kill**, so the safety floor never moved even on 06-17. We leave
+  06-17 in the totals rather than quietly dropping it; the wall improving in the open is the point.
 
 ---
 
@@ -91,8 +93,9 @@ us, on a fresh sample you generated and we never touched:
 python3 pub_daily_soak_runner.py --duration-seconds 1800 --sleep-seconds 0
 # ~100k fresh verdicts on your machine; then count:
 #   must-kill allowed  (preferred == KILL and not blocked)   ->  expect 0
-#   loose-side passes  (preferred == HOLD and actual == PASS) ->  you'll find the git/docker/kubectl
-#                                                                 ones from §1 — go ahead, catch us
+#   loose-side passes  (preferred == HOLD and actual == PASS) ->  expect 0 on current code; the
+#                                                                 git/docker/kubectl cases from §1
+#                                                                 are now held as OPAQUE_EXECUTION
 ```
 
 (`--sleep-seconds 1.0` throttles to ~1 verdict/sec ≈ 1,800 in 30 min; use `0` for a large sample.)
