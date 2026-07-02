@@ -225,6 +225,35 @@ class ChannelPolicy:
         "private-ledger",
         "post the cleaned sample",
     )
+    reconnaissance_tokens: Sequence[str] = (
+        "what is my ip",
+        "public ip",
+        "external ip",
+        "ip address",
+        "proxy ip",
+        "proxy address",
+        "exit node",
+        "geoip",
+        "geolocation",
+        "ifconfig.me",
+        "icanhazip",
+        "ipify",
+        "checkip",
+        "ipinfo",
+        "timezone",
+        "time zone",
+        "/etc/timezone",
+        "/etc/localtime",
+        "timedatectl",
+        "get-timezone",
+        "tzutil",
+        "date +%z",
+        "date +%Z",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+    )
     rejected_pollution_tokens: Sequence[str] = (
         "continue anyway",
         "try again without asking",
@@ -467,9 +496,39 @@ def _common_findings(
         )
 
     findings.extend(_metadata_boundary_risk_findings(envelope))
+    findings.extend(_reconnaissance_findings(envelope, policy))
     findings.extend(_pass_road_findings(envelope, policy))
 
     return tuple(findings)
+
+
+def _reconnaissance_findings(
+    envelope: ChannelEnvelope,
+    policy: ChannelPolicy,
+) -> Sequence[ChannelFinding]:
+    raw_payload = _channel_raw_payload(envelope.metadata)
+    metadata_text = " ".join(
+        str(value)
+        for key in ("tool_name", "action_type", "description", "command_text")
+        if (value := envelope.metadata.get(key))
+    )
+    if raw_payload:
+        metadata_text = " ".join((metadata_text, str(raw_payload)))
+    hits = _unique_hits(
+        _token_hits(envelope.content, policy.reconnaissance_tokens),
+        _token_hits(metadata_text, policy.reconnaissance_tokens),
+    )
+    if not hits:
+        return ()
+    return (
+        ChannelFinding(
+            reason_code="CHANNEL_RUNTIME_RECONNAISSANCE",
+            severity=ChannelSeverity.SUSPECT,
+            layer=envelope.layer,
+            detail="channel asks for runtime IP, proxy, geolocation, or timezone reconnaissance",
+            evidence=hits,
+        ),
+    )
 
 
 def _audit_user_request(
@@ -786,6 +845,35 @@ PASS_ROAD_NETWORK_TOKENS = (
     "iwr",
     "irm",
 )
+PASS_ROAD_RECONNAISSANCE_TOKENS = (
+    "what is my ip",
+    "public ip",
+    "external ip",
+    "ip address",
+    "proxy ip",
+    "proxy address",
+    "exit node",
+    "geoip",
+    "geolocation",
+    "ifconfig.me",
+    "icanhazip",
+    "ipify",
+    "checkip",
+    "ipinfo",
+    "timezone",
+    "time zone",
+    "/etc/timezone",
+    "/etc/localtime",
+    "timedatectl",
+    "get-timezone",
+    "tzutil",
+    "date +%z",
+    "date +%Z",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+)
 PASS_ROAD_SECRET_TOKENS = (
     ".env",
     ".ssh",
@@ -987,6 +1075,16 @@ def _pass_road_findings(
                 "CHANNEL_PASS_ROAD_NETWORK_DENIED",
                 ChannelSeverity.SUSPECT,
                 "pass road cannot carry network movement",
+                (recipe_id,),
+            ),
+        )
+    if _contains_any_text(text, PASS_ROAD_RECONNAISSANCE_TOKENS):
+        return (
+            _pass_road_finding(
+                envelope,
+                "CHANNEL_PASS_ROAD_RECONNAISSANCE_DENIED",
+                ChannelSeverity.SUSPECT,
+                "pass road cannot carry runtime IP, proxy, geolocation, or timezone reconnaissance",
                 (recipe_id,),
             ),
         )
@@ -1303,6 +1401,8 @@ def infer_pass_road(
     targets = [str(p) for p in target_paths if p and str(p).strip()]
     text = " ".join((command_text, *targets)).lower()
     if _contains_any_text(text, PASS_ROAD_NETWORK_TOKENS):
+        return None
+    if _contains_any_text(text, PASS_ROAD_RECONNAISSANCE_TOKENS):
         return None
     if _contains_any_text(text, PASS_ROAD_SECRET_TOKENS):
         return None

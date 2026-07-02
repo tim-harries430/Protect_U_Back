@@ -37,7 +37,7 @@ from pub_os_broker import HEADER_BYTES, MAX_FRAME_BYTES, make_listener, read_fra
 from pub_os_core import _frame
 
 
-def mediate(conn: socket.socket, *, key: bytes, record=None, max_frame: int = MAX_FRAME_BYTES) -> None:
+def mediate(conn: socket.socket, *, key: bytes, record=None, max_frame: int = MAX_FRAME_BYTES, env_overrides=None) -> None:
     """Eyes + warden behind the window. Judge each request; on allow, the beast
     SEALS and the warden EXECUTES (the signature is the eyes/warden boundary). The
     agent gets only `ok`/result or a bare `ok:false` -- never a reason."""
@@ -50,7 +50,7 @@ def mediate(conn: socket.socket, *, key: bytes, record=None, max_frame: int = MA
             command = str(request.get("command", ""))
             cwd = str(request.get("cwd", "."))
             op = request.get("op") or {}
-            disposition, reason_code = pub_os_core.judge_operation(command, cwd, op)
+            disposition, reason_code = pub_os_core.judge_operation(command, cwd, op, env_overrides=env_overrides)
         except Exception:
             break  # ambiguous request -> close (fail-closed)
 
@@ -78,10 +78,10 @@ def mediate(conn: socket.socket, *, key: bytes, record=None, max_frame: int = MA
         pass
 
 
-def _serve_eyes_warden(listener: socket.socket, *, key: bytes, record=None) -> None:
+def _serve_eyes_warden(listener: socket.socket, *, key: bytes, record=None, env_overrides=None) -> None:
     while True:
         conn, _ = listener.accept()
-        mediate(conn, key=key, record=record)
+        mediate(conn, key=key, record=record, env_overrides=env_overrides)
 
 
 def run(agent_argv, *, project_root, runtime_dir=None, record=None) -> int:
@@ -96,10 +96,24 @@ def run(agent_argv, *, project_root, runtime_dir=None, record=None) -> int:
     box_socket = str(runtime / "box.sock")     # the box's single egress (bind-mounted in)
     core_socket = str(runtime / "core.sock")   # host-side: eyes + warden
 
+    # The eyes' continuity judges (xray / temporal / scene) keep state on disk.
+    # Default they land under <cwd>/.claude/ -- which is INSIDE the box's RW
+    # project_root bind, so the agent could tamper with them and reset the next
+    # verdict. Pin them to a host-only dir under `runtime` instead: `runtime` is
+    # never bind-mounted into the box (the box gets project_root + broker_socket
+    # only), so the agent cannot reach these files. Mirrors the ledger supervisor
+    # discipline (single writer outside the cage).
+    state_root = runtime / "pub_state"
+    env_overrides = {
+        "PUB_CLAUDE_HOOK_STATE_DIR": str(state_root / "xray"),
+        "PUB_CLAUDE_TEMPORAL_STATE_DIR": str(state_root / "temporal"),
+        "PUB_CLAUDE_SCENE_STATE_DIR": str(state_root / "scene"),
+    }
+
     # 1. eyes + warden (the judge and the hands, sharing the key the box lacks)
     core_listener = make_listener(core_socket, family=socket.AF_UNIX)
     threading.Thread(
-        target=_serve_eyes_warden, args=(core_listener,), kwargs={"key": key, "record": record}, daemon=True
+        target=_serve_eyes_warden, args=(core_listener,), kwargs={"key": key, "record": record, "env_overrides": env_overrides}, daemon=True
     ).start()
     # 2. the window (dumb relay between the box socket and the eyes)
     box_listener = make_listener(box_socket, family=socket.AF_UNIX)

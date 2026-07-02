@@ -888,6 +888,8 @@ def _targets_and_effects(
 
     if _network_present(command_text, targets):
         effects.add(SideEffect.NETWORK)
+    if _reconnaissance_present(command_text, targets):
+        effects.update({SideEffect.NETWORK, SideEffect.SECRET_ACCESS})
     if _secret_present(command_text, targets):
         effects.add(SideEffect.SECRET_ACCESS)
     if _audit_surface_present(command_text, targets) and effects & {
@@ -1568,6 +1570,41 @@ def _file_path_values(tool_input: Mapping[str, Any]) -> tuple[str, ...]:
 def _network_present(command_text: str, targets: Sequence[str]) -> bool:
     haystack = " ".join((command_text, *targets)).lower()
     return any(token in haystack for token in ("http://", "https://", " curl ", " wget "))
+
+
+_RECONNAISSANCE_TOKENS = (
+    "what is my ip",
+    "public ip",
+    "external ip",
+    "proxy ip",
+    "proxy address",
+    "exit node",
+    "geoip",
+    "geolocation",
+    "ifconfig.me",
+    "icanhazip",
+    "ipify",
+    "checkip",
+    "ipinfo",
+    "/etc/timezone",
+    "/etc/localtime",
+    "timedatectl",
+    "get-timezone",
+    "tzutil",
+    "date +%z",
+    "date +%Z",
+    "hostname -i",
+    "hostname -I",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+)
+
+
+def _reconnaissance_present(command_text: str, targets: Sequence[str]) -> bool:
+    haystack = " ".join((command_text, *targets)).lower()
+    return any(token.lower() in haystack for token in _RECONNAISSANCE_TOKENS)
 
 
 def _secret_present(command_text: str, targets: Sequence[str]) -> bool:

@@ -46,11 +46,20 @@ def _frame(payload: bytes) -> bytes:
     return struct.pack("!I", len(payload)) + payload
 
 
-def judge(command: str, cwd: str) -> tuple[str, str]:
+def judge(
+    command: str,
+    cwd: str,
+    *,
+    env_overrides: "Mapping[str, str] | None" = None,
+) -> tuple[str, str]:
     """Pure judgment: a (disposition, reason_code) from pub's existing eyes.
 
     No file is written, nothing is executed -- the eyes only OBSERVE and decide.
+    ``env_overrides`` forwards host-only knobs (notably the PUB_CLAUDE_*_STATE_DIR
+    pointers) so the prison can keep the continuity judges' state OUTSIDE the
+    box's RW bind. Default None preserves the legacy in-cwd state location.
     """
+    environ = {"CLAUDE_PROJECT_DIR": cwd, **(env_overrides or {})}
     event = {
         "session_id": "pub_os_core",
         "transcript_path": "pub_os_core",
@@ -59,35 +68,54 @@ def judge(command: str, cwd: str) -> tuple[str, str]:
         "tool_input": {"command": command},
         "tool_use_id": "pub_os_core",
     }
-    action = action_from_claude_event(event, environ={"CLAUDE_PROJECT_DIR": cwd})
+    action = action_from_claude_event(event, environ=environ)
     decision = _audit_action(action)
     return decision.disposition.value, decision.reason_code
 
 
-def judge_operation(command: str, cwd: str, op: dict) -> tuple[str, str]:
+def judge_operation(
+    command: str,
+    cwd: str,
+    op: dict,
+    *,
+    env_overrides: "Mapping[str, str] | None" = None,
+) -> tuple[str, str]:
     """Judge the command and the structured operation before anything is sealed.
 
     The shell surface and the warden op are separate inputs. A PASS command may
     not smuggle a different op through the signing boundary.
     """
-    disposition, reason_code = judge(command, cwd)
+    disposition, reason_code = judge(command, cwd, env_overrides=env_overrides)
     if disposition != "PASS":
         return disposition, reason_code
-    return _judge_op_bound_to_command(command, cwd, op)
+    return _judge_op_bound_to_command(command, cwd, op, env_overrides=env_overrides)
 
 
-def authorize(command: str, cwd: str, op: dict, *, key: bytes) -> bytes:
+def authorize(
+    command: str,
+    cwd: str,
+    op: dict,
+    *,
+    key: bytes,
+    env_overrides: "Mapping[str, str] | None" = None,
+) -> bytes:
     """Beast -> warden: judge the request, then SEAL an order the warden can trust.
 
     The agent never sees this (one-way mirror); only the warden consumes it. `op`
     is the structured operation the eyes already extracted -- the warden will
     perform exactly it, and only if this seal says allow.
     """
-    disposition, _reason = judge_operation(command, cwd, op)
+    disposition, _reason = judge_operation(command, cwd, op, env_overrides=env_overrides)
     return sign_verdict({"allow": disposition == "PASS", "op": op}, key=key)
 
 
-def _judge_op_bound_to_command(command: str, cwd: str, op: dict) -> tuple[str, str]:
+def _judge_op_bound_to_command(
+    command: str,
+    cwd: str,
+    op: dict,
+    *,
+    env_overrides: "Mapping[str, str] | None" = None,
+) -> tuple[str, str]:
     kind = str((op or {}).get("kind", ""))
     if kind != "read":
         return "HOLD", "OP_KIND_UNSUPPORTED"
@@ -96,7 +124,7 @@ def _judge_op_bound_to_command(command: str, cwd: str, op: dict) -> tuple[str, s
     if not path:
         return "HOLD", "OP_TARGET_MISSING"
 
-    if not _command_names_target(command, cwd, path):
+    if not _command_names_target(command, cwd, path, env_overrides=env_overrides):
         return "HOLD", "OP_COMMAND_TARGET_MISMATCH"
 
     op_action = _action_for_tool(
@@ -104,12 +132,19 @@ def _judge_op_bound_to_command(command: str, cwd: str, op: dict) -> tuple[str, s
         {"file_path": path},
         cwd,
         tool_use_id="pub_os_op_read",
+        env_overrides=env_overrides,
     )
     decision = _audit_action(op_action)
     return decision.disposition.value, decision.reason_code
 
 
-def _command_names_target(command: str, cwd: str, target_path: str) -> bool:
+def _command_names_target(
+    command: str,
+    cwd: str,
+    target_path: str,
+    *,
+    env_overrides: "Mapping[str, str] | None" = None,
+) -> bool:
     if _command_text_names_target(command, target_path):
         return True
     action = _action_for_tool(
@@ -117,11 +152,20 @@ def _command_names_target(command: str, cwd: str, target_path: str) -> bool:
         {"command": command},
         cwd,
         tool_use_id="pub_os_command_binding",
+        env_overrides=env_overrides,
     )
     return any(_same_target(cwd, target, target_path) for target in action.target_paths)
 
 
-def _action_for_tool(tool_name: str, tool_input: dict, cwd: str, *, tool_use_id: str):
+def _action_for_tool(
+    tool_name: str,
+    tool_input: dict,
+    cwd: str,
+    *,
+    tool_use_id: str,
+    env_overrides: "Mapping[str, str] | None" = None,
+):
+    environ = {"CLAUDE_PROJECT_DIR": cwd, **(env_overrides or {})}
     event = {
         "session_id": "pub_os_core",
         "transcript_path": "pub_os_core",
@@ -130,7 +174,7 @@ def _action_for_tool(tool_name: str, tool_input: dict, cwd: str, *, tool_use_id:
         "tool_input": tool_input,
         "tool_use_id": tool_use_id,
     }
-    return action_from_claude_event(event, environ={"CLAUDE_PROJECT_DIR": cwd})
+    return action_from_claude_event(event, environ=environ)
 
 
 def _same_target(cwd: str, left: str, right: str) -> bool:

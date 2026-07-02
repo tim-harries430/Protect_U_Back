@@ -218,12 +218,37 @@ def verify_claude_code(
             "PUB_CLAUDE_HOOK_LOG_DIR": str(verify_dir),
         },
     )
+    recon_payload = {
+        **payload,
+        "tool_input": {
+            "command": "date +%Z",
+            "description": "synthetic runtime reconnaissance probe",
+        },
+        "tool_use_id": "pub_claude_code_connector_verify_recon",
+    }
+    recon_result = run_pretool_admission(
+        json.dumps(recon_payload),
+        environ={
+            "CLAUDE_PROJECT_DIR": str(project_root),
+            "PUB_CLAUDE_HOOK_STATE_DIR": str(verify_dir),
+            "PUB_CLAUDE_HOOK_LOG_DIR": str(verify_dir),
+        },
+    )
     hook_output = result.output.get("hookSpecificOutput") if result.output else None
+    recon_hook_output = (
+        recon_result.output.get("hookSpecificOutput") if recon_result.output else None
+    )
     return {
         **status,
         "preflight_blocked": bool(
             isinstance(hook_output, dict) and hook_output.get("permissionDecision") == "deny"
         ),
+        "recon_preflight_blocked": bool(
+            isinstance(recon_hook_output, dict)
+            and recon_hook_output.get("permissionDecision") == "deny"
+        ),
+        "recon_disposition": recon_result.disposition.value,
+        "recon_reason_code": recon_result.reason_code,
         "disposition": result.disposition.value,
         "reason_code": result.reason_code,
         "io_executed": False,

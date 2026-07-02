@@ -56,6 +56,17 @@ DEFAULT_SYSTEM_RO = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc")
 # tmpfs mounts: scratch space that vanishes with the cage.
 DEFAULT_TMPFS = ("/tmp", "/run")
 
+RECON_ENV_KEYS = frozenset(
+    {
+        "TZ",
+        "TIMEZONE",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+    }
+)
+
 
 class CageUnavailable(RuntimeError):
     """Raised when a cage was requested but cannot be built (fail closed)."""
@@ -212,10 +223,22 @@ def make_cage_spawn(spec: CageSpec):
         full = build_cage_argv(tuple(argv), spec)
         # cwd is fixed by --chdir to project_root inside the cage; the outer cwd
         # is irrelevant. env is passed through (the runner already stamped the
-        # PUB_OS_* markers; the cage does not widen authority).
-        return subprocess.Popen(full, env=dict(env or os.environ))
+        # PUB_OS_* markers; the cage does not widen authority). Runtime recon
+        # surfaces are normalized so an agent cannot infer host proxy/timezone
+        # identity from inherited environment alone.
+        return subprocess.Popen(full, env=_scrub_runtime_recon_env(env or os.environ))
 
     return spawn
+
+
+def _scrub_runtime_recon_env(env: Mapping[str, str]) -> dict[str, str]:
+    scrubbed = {
+        str(key): str(value)
+        for key, value in env.items()
+        if str(key).upper() not in RECON_ENV_KEYS
+    }
+    scrubbed["TZ"] = "UTC"
+    return scrubbed
 
 
 def _claude_package_dir(real_bin: str) -> str:
