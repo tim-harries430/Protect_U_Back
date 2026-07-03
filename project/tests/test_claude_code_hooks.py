@@ -196,6 +196,59 @@ def test_pretool_admission_denies_xray_review_before_claude_ask(tmp_path):
     assert "before Claude Ask" in hook_output["permissionDecisionReason"]
 
 
+def test_pretool_admission_denies_renamed_zip_magic_archive_a1(tmp_path):
+    # A1 end-to-end: zip-slip payload renamed to .whl must still QUARANTINE.
+    archive_path = tmp_path / "payload.whl"
+    write_zip_slip(archive_path)
+    payload = event(
+        tmp_path,
+        tool_use_id="call_xray_review_renamed_whl",
+        tool_input={
+            "command": f"cat {archive_path.as_posix()}",
+            "description": "read renamed wheel archive",
+        },
+    )
+
+    result = run_pretool_admission(json.dumps(payload), environ=env(tmp_path))
+
+    assert result.blocked is True
+    assert result.disposition == EvidenceDisposition.QUARANTINE
+    assert result.reason_code == "XRAY_REVIEW_CONTAINER_ESCAPE"
+    assert result.output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_opaque_hold_still_denies_under_acceptEdits_event_mode(tmp_path):
+    payload = event(
+        tmp_path,
+        tool_use_id="call_opaque_accept_edits",
+        tool_input={
+            "command": "python3 -c \"open('x','w').write('a')\"",
+            "description": "opaque inline python",
+        },
+    )
+    payload["permission_mode"] = "acceptEdits"
+
+    result = run_pretool_admission(json.dumps(payload), environ=env(tmp_path))
+
+    assert result.blocked is True
+    assert result.output["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "before Claude" in result.output["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_event_permission_mode_acceptEdits_is_authority_poisoning(tmp_path):
+    payload = event(
+        tmp_path,
+        tool_use_id="call_accept_edits_mode",
+        tool_input={"command": "ls -la", "description": "list directory"},
+    )
+    payload["permission_mode"] = "acceptEdits"
+
+    result = run_pretool_admission(json.dumps(payload), environ=env(tmp_path))
+
+    assert result.blocked is True
+    assert result.output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
 def test_pretool_admission_allows_visible_project_mkdir(tmp_path):
     payload = event(
         tmp_path,
