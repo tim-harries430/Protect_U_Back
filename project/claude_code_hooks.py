@@ -1630,16 +1630,34 @@ def _audit_surface_present(command_text: str, targets: Sequence[str]) -> bool:
     )
 
 
+_UNSUPERVISED_CC_PERMISSION_MODES = frozenset(
+    {
+        "bypasspermissions",
+        "bypass_permissions",
+        "bypass-permissions",
+        "acceptedits",
+        "accept_edits",
+        "accept-edits",
+        "dontask",
+        "dont_ask",
+        "dont-ask",
+    }
+)
+
+
+def _normalized_cc_permission_mode(value: Any) -> str:
+    return str(value).strip().replace(" ", "").lower()
+
+
 def _authority_claim_present(value: Any) -> bool:
     if isinstance(value, Mapping):
         for key, child in value.items():
             key_text = str(key).strip().lower()
             if key_text in {"can_execute", "can_grant_permission"} and _truthy(child):
                 return True
-            if key_text in {"permission_mode", "permissionmode"} and str(child).strip() in {
-                "bypassPermissions",
-                "bypass_permissions",
-            }:
+            if key_text in {"permission_mode", "permissionmode"} and (
+                _normalized_cc_permission_mode(child) in _UNSUPERVISED_CC_PERMISSION_MODES
+            ):
                 return True
             if key_text in {"role", "authority", "permission"} and str(child).strip().lower() in {
                 "admin",

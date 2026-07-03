@@ -29,6 +29,12 @@ from access_time_grid import (
     TimeGridSpec,
     build_time_grid_trace,
 )
+from archive_container_probe import (
+    ZIP_CONTAINER_MAGICS,
+    ZIP_CONTAINER_SUFFIX_HINTS,
+    header_is_zip_container_magic,
+    sniff_zip_container,
+)
 from ot_gate import CommandProposal, SideEffect
 from safe_path import safe_resolve
 
@@ -1873,7 +1879,8 @@ def _os_ctime_semantics() -> str:
 # suffix. Archive recognition is anchored on these unforgeable header bytes, never
 # on the producer-chosen extension -- renaming evil.zip -> evil.whl must not blind
 # CONTAINER_ESCAPE. (Red-team A1: trust the physical bytes, not the name.)
-_ZIP_MAGICS = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
+_ZIP_MAGICS = ZIP_CONTAINER_MAGICS
+_ARCHIVE_SUFFIX_HINTS = ZIP_CONTAINER_SUFFIX_HINTS
 # Bomb / resource guards -- scanning attacker-supplied archives must terminate and
 # must not be coaxed into unbounded memory by a deeply nested or hugely-expanding
 # container. On any limit we report a blindspot status (HOLD), never a silent pass.
@@ -1886,15 +1893,21 @@ _ARCHIVE_ENTRY_MAP_CAP = 256
 
 
 def _is_zip_magic(header: bytes) -> bool:
-    return any(header.startswith(magic) for magic in _ZIP_MAGICS)
+    return header_is_zip_container_magic(header)
 
 
 def _sniff_is_zip(path: Path) -> bool:
-    try:
-        with open(path, "rb") as handle:
-            return _is_zip_magic(handle.read(4))
-    except OSError:
-        return False
+    return sniff_zip_container(path)
+
+
+def _archive_probe_metadata(path: Path) -> dict[str, Any]:
+    """Additive A1 audit fields: magic governs scanning; suffix is informational."""
+    metadata: dict[str, Any] = {"archive_recognition_method": "zip_magic_v1"}
+    suffix = path.suffix.lower()
+    if suffix:
+        metadata["archive_name_suffix"] = suffix
+        metadata["archive_suffix_hint_match"] = suffix in _ARCHIVE_SUFFIX_HINTS
+    return metadata
 
 
 def _name_matches_sensitive(name: str) -> bool:
@@ -1916,6 +1929,7 @@ def _archive_entry_details(path: Path) -> dict[str, Any]:
             "archive_format": "zip",
             "archive_observation_status": "archive_unreadable",
             "archive_observation_error": type(exc).__name__,
+            **_archive_probe_metadata(path),
         }
     status = "archive_scanned"
     if budget["bomb"]:
@@ -1930,6 +1944,7 @@ def _archive_entry_details(path: Path) -> dict[str, Any]:
         "archive_escape_entries": tuple(scan["escapes"]),
         "archive_sensitive_entries": tuple(scan["sensitive"]),
         "archive_observation_status": status,
+        **_archive_probe_metadata(path),
     }
 
 

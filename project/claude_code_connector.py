@@ -7,7 +7,7 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 
 BACKUP_SUFFIX = ".protect_u_back.bak"
@@ -17,6 +17,30 @@ BACKUP_SUFFIX = ".protect_u_back.bak"
 # default-deny gate. "*" fires the hook for every tool; the hook then decides
 # per tool (recognized tools are classified, unknown ones are held for review).
 TOOL_MATCHER = "*"
+# C1 deployment note: hooks emit permissionDecision "deny" for HOLD. Claude Code
+# acceptEdits, bypassPermissions, and broad permissions.allow (e.g. Bash(python3 *))
+# must not be used on supervised projects. connect/status/verify scan project and
+# user settings and surface warnings; hooks remain the runtime court.
+DANGEROUS_CC_PERMISSION_MODES = frozenset(
+    {
+        "acceptedits",
+        "accept_edits",
+        "accept-edits",
+        "bypasspermissions",
+        "bypass_permissions",
+        "bypass-permissions",
+        "dontask",
+        "dont_ask",
+        "dont-ask",
+    }
+)
+DANGEROUS_CC_ALLOW_PATTERNS = (
+    re.compile(r"^\s*Bash\s*\(\s*python(?:\d(?:\.\d+)?)?(?:\s+\*)?\s*\)\s*$", re.I),
+    re.compile(r"^\s*Bash\s*\(\s*\*\s*\)\s*$", re.I),
+    re.compile(r"^\s*Bash\s*\([^)]*\*[^)]*\)\s*$", re.I),
+)
+_PERMISSION_MODE_SETTING_KEYS = frozenset({"defaultmode", "permissionmode"})
+_ALLOW_RULE_SETTING_KEYS = frozenset({"allow", "allowed", "allowlist"})
 PRETOOL_SCRIPT = "pretool_admission.py"
 POSTTOOL_SCRIPT = "posttool_autopsy.py"
 MANAGED_SCRIPTS = (PRETOOL_SCRIPT, POSTTOOL_SCRIPT)
@@ -70,6 +94,7 @@ def status_claude_code(
     pretool_hook = _has_hook_command(settings, "PreToolUse", commands["PreToolUse"])
     posttool_hook = _has_hook_command(settings, "PostToolUse", commands["PostToolUse"])
     switch_path = _gate_switch_path(project_root)
+    permission_warnings = _audit_claude_permission_settings(project_root)
     return {
         "claude_project": str(project_root),
         "settings_path": str(settings_path),
@@ -89,6 +114,8 @@ def status_claude_code(
         "posttool_command": commands["PostToolUse"],
         "backup_path": str(_backup_path(settings_path)),
         "sha256": _sha256(settings_path) if settings_path.exists() else None,
+        "permission_warnings": permission_warnings,
+        "permission_unsafe": bool(permission_warnings),
     }
 
 
@@ -254,7 +281,109 @@ def verify_claude_code(
         "io_executed": False,
         "can_execute": False,
         "can_grant_permission": False,
+        "permission_posture_ok": not status.get("permission_unsafe"),
     }
+
+
+def _normalize_permission_token(value: Any) -> str:
+    return str(value).strip().replace(" ", "").lower()
+
+
+def _claude_settings_paths(project_root: Path) -> tuple[Path, ...]:
+    candidates = (
+        project_root / ".claude" / "settings.json",
+        project_root / ".claude" / "settings.local.json",
+        Path.home() / ".claude" / "settings.json",
+        Path.home() / ".claude" / "settings.local.json",
+    )
+    return tuple(path for path in candidates if path.is_file())
+
+
+def _settings_audit_label(path: Path, project_root: Path) -> str:
+    try:
+        home_settings = Path.home() / ".claude" / "settings.json"
+        if path.resolve() == home_settings.resolve():
+            return "~/.claude/settings.json"
+    except OSError:
+        pass
+    try:
+        return str(path.relative_to(project_root)).replace("\\", "/")
+    except ValueError:
+        return str(path)
+
+
+def _load_settings_json(path: Path) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except (OSError, ValueError):
+        return None, f"settings_unreadable:{path}"
+    if not isinstance(data, dict):
+        return None, f"settings_invalid_root:{path}"
+    return data, None
+
+
+def _iter_settings_nodes(obj: Any, path: str = "") -> Any:
+    if isinstance(obj, Mapping):
+        for key, child in obj.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            yield child_path, child
+            yield from _iter_settings_nodes(child, child_path)
+    elif isinstance(obj, (list, tuple)):
+        for index, child in enumerate(obj):
+            child_path = f"{path}[{index}]"
+            yield child_path, child
+            yield from _iter_settings_nodes(child, child_path)
+
+
+def _dangerous_allow_rule(rule: Any) -> str | None:
+    if not isinstance(rule, str):
+        return None
+    text = rule.strip()
+    if not text:
+        return None
+    for pattern in DANGEROUS_CC_ALLOW_PATTERNS:
+        if pattern.match(text):
+            return text
+    return None
+
+
+def _audit_claude_permission_settings(project_root: Path) -> tuple[str, ...]:
+    warnings: list[str] = []
+    for path in _claude_settings_paths(project_root):
+        data, error = _load_settings_json(path)
+        if error:
+            warnings.append(error)
+            continue
+        if data is None:
+            continue
+        label = _settings_audit_label(path, project_root)
+        for node_path, value in _iter_settings_nodes(data):
+            leaf = node_path.rsplit(".", 1)[-1]
+            leaf = leaf.split("[", 1)[0]
+            leaf_key = leaf.strip().lower().replace("-", "").replace("_", "")
+            if leaf_key in _PERMISSION_MODE_SETTING_KEYS:
+                token = _normalize_permission_token(value)
+                if token in DANGEROUS_CC_PERMISSION_MODES:
+                    warnings.append(
+                        f"dangerous_permission_mode:{value} in {label} ({node_path})"
+                    )
+            if leaf.lower() in _ALLOW_RULE_SETTING_KEYS:
+                if "[" in node_path:
+                    continue
+                if isinstance(value, str):
+                    matched = _dangerous_allow_rule(value)
+                    if matched:
+                        warnings.append(
+                            f"dangerous_allow_rule:{matched} in {label} ({node_path})"
+                        )
+                elif isinstance(value, (list, tuple)):
+                    for item in value:
+                        matched = _dangerous_allow_rule(item)
+                        if matched:
+                            warnings.append(
+                                f"dangerous_allow_rule:{matched} in {label} ({node_path})"
+                            )
+    return tuple(dict.fromkeys(warnings))
 
 
 def find_claude_project(claude_project: str | Path | None = None) -> Path:
@@ -600,13 +729,20 @@ def _print_result(result: dict[str, Any], *, as_json: bool) -> None:
     if as_json:
         print(json.dumps(result, indent=2, sort_keys=True))
         return
+    permission_warnings = tuple(result.get("permission_warnings") or ())
     for key, value in result.items():
+        if key == "permission_warnings":
+            continue
         if isinstance(value, dict):
             print(f"{key}:")
             for child_key, child_value in value.items():
                 print(f"  {child_key}: {child_value}")
         else:
             print(f"{key}: {value}")
+    if permission_warnings:
+        print("permission_warnings:")
+        for item in permission_warnings:
+            print(f"  - {item}")
 
 
 if __name__ == "__main__":

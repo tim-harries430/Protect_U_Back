@@ -67,6 +67,9 @@ CC_DENIED_PERMISSION_MODES = {
     "dont-ask",
     "dont_ask",
     "dontask",
+    "acceptedits",
+    "accept_edits",
+    "accept-edits",
 }
 
 
