@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
@@ -18,6 +19,83 @@ TIME_GRID_REQUIRED_FIELDS = (
 )
 WINDOWS_CTIME = "windows_creation_time"
 UNIX_CTIME = "unix_metadata_change_time"
+WINDOWS_TIME_SIGNATURE = (4, 4)
+UNIX_TIME_SIGNATURE = (8, 8)
+BEAT_PATTERN = ("snare", "kick")
+DEFAULT_BEAT_INTERVAL_NS = 10_000_000
+
+
+@dataclass(frozen=True)
+class PlatformBeatPolicy:
+    platform: str
+    beats_per_bar: int
+    beat_unit: int
+    interval_ns: int = DEFAULT_BEAT_INTERVAL_NS
+    pattern: Sequence[str] = BEAT_PATTERN
+
+    def __post_init__(self):
+        beats = int(self.beats_per_bar)
+        unit = int(self.beat_unit)
+        interval = int(self.interval_ns)
+        pattern = tuple(str(item).strip().lower() for item in self.pattern if str(item).strip())
+        if beats <= 0 or unit <= 0:
+            raise ValueError("time signature values must be positive")
+        if interval <= 0:
+            raise ValueError("beat interval_ns must be positive")
+        if not pattern:
+            raise ValueError("beat pattern must be non-empty")
+        object.__setattr__(self, "platform", str(self.platform))
+        object.__setattr__(self, "beats_per_bar", beats)
+        object.__setattr__(self, "beat_unit", unit)
+        object.__setattr__(self, "interval_ns", interval)
+        object.__setattr__(self, "pattern", pattern)
+
+    @property
+    def time_signature(self) -> str:
+        return f"{self.beats_per_bar}/{self.beat_unit}"
+
+    def beat_name(self, absolute_index: int) -> str:
+        return self.pattern[int(absolute_index) % len(self.pattern)]
+
+    def beat_index(self, absolute_index: int) -> int:
+        return int(absolute_index) % self.beats_per_bar
+
+    def bar_index(self, absolute_index: int) -> int:
+        return int(absolute_index) // self.beats_per_bar
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "platform": self.platform,
+            "time_signature": self.time_signature,
+            "beats_per_bar": self.beats_per_bar,
+            "beat_unit": self.beat_unit,
+            "interval_ns": self.interval_ns,
+            "pattern": tuple(
+                self.beat_name(index) for index in range(self.beats_per_bar)
+            ),
+            "axis": "T",
+            "field_axis": "time",
+        }
+
+
+def platform_beat_policy(
+    platform: str | None = None,
+    *,
+    interval_ns: int = DEFAULT_BEAT_INTERVAL_NS,
+) -> PlatformBeatPolicy:
+    token = str(platform or os.name).strip().lower()
+    if token in {"nt", "win", "win32", "windows"}:
+        beats, unit = WINDOWS_TIME_SIGNATURE
+        normalized = "windows"
+    else:
+        beats, unit = UNIX_TIME_SIGNATURE
+        normalized = "unix"
+    return PlatformBeatPolicy(
+        platform=normalized,
+        beats_per_bar=beats,
+        beat_unit=unit,
+        interval_ns=interval_ns,
+    )
 
 
 @dataclass(frozen=True)
@@ -72,6 +150,7 @@ class TimeGridSpec:
 class TimeGridCell:
     index: int
     expected_ts_ns: int
+    exists: bool | None = None
     sampled_at_ns: int | None = None
     metadata_vector_hash: str | None = None
     mtime_ns: int | None = None
@@ -80,11 +159,15 @@ class TimeGridCell:
     file_id: str | None = None
     nlink: int | None = None
     resolved_path: str | None = None
+    beat_name: str | None = None
+    beat_index: int | None = None
+    bar_index: int | None = None
     details: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         object.__setattr__(self, "index", int(self.index))
         object.__setattr__(self, "expected_ts_ns", int(self.expected_ts_ns))
+        object.__setattr__(self, "exists", None if self.exists is None else bool(self.exists))
         object.__setattr__(
             self,
             "sampled_at_ns",
@@ -97,6 +180,16 @@ class TimeGridCell:
             None if self.os_ctime_ns is None else int(self.os_ctime_ns),
         )
         object.__setattr__(self, "nlink", None if self.nlink is None else int(self.nlink))
+        object.__setattr__(
+            self,
+            "beat_index",
+            None if self.beat_index is None else int(self.beat_index),
+        )
+        object.__setattr__(
+            self,
+            "bar_index",
+            None if self.bar_index is None else int(self.bar_index),
+        )
         object.__setattr__(self, "details", dict(self.details))
 
     @classmethod
@@ -118,6 +211,7 @@ class TimeGridCell:
         return cls(
             index=index,
             expected_ts_ns=expected_ts_ns,
+            exists=getattr(state, "exists", vector.get("exists")),
             sampled_at_ns=getattr(sample, "sampled_at_ns", None),
             metadata_vector_hash=getattr(sample, "metadata_vector_hash", None)
             or vector.get("metadata_vector_hash")
@@ -136,7 +230,18 @@ class TimeGridCell:
 
     def missing_fields(self, required_fields: Sequence[str]) -> tuple[str, ...]:
         payload = self.to_dict()
-        return tuple(field for field in required_fields if payload.get(field) is None)
+        undefined_when_absent = {
+            "mtime_ns",
+            "os_ctime_ns",
+            "file_id",
+            "nlink",
+        }
+        return tuple(
+            field
+            for field in required_fields
+            if payload.get(field) is None
+            and not (self.exists is False and field in undefined_when_absent)
+        )
 
     def sample_drift_ns(self) -> int | None:
         if self.sampled_at_ns is None:
@@ -148,6 +253,7 @@ class TimeGridCell:
             "schema": TIME_GRID_SCHEMA,
             "index": self.index,
             "expected_ts_ns": self.expected_ts_ns,
+            "exists": self.exists,
             "sampled_at_ns": self.sampled_at_ns,
             "metadata_vector_hash": self.metadata_vector_hash,
             "mtime_ns": self.mtime_ns,
@@ -156,6 +262,9 @@ class TimeGridCell:
             "file_id": self.file_id,
             "nlink": self.nlink,
             "resolved_path": self.resolved_path,
+            "beat_name": self.beat_name,
+            "beat_index": self.beat_index,
+            "bar_index": self.bar_index,
             "details": dict(self.details),
         }
 
@@ -205,6 +314,24 @@ class TimeGridTrace:
     @property
     def findings(self) -> tuple[dict[str, Any], ...]:
         findings: list[dict[str, Any]] = []
+        if self.details.get("sampling_truncated"):
+            findings.append(
+                {
+                    "type": "GRID_SAMPLING_TRUNCATED",
+                    "component": "observation_grid_truncated_pressure",
+                    "severity": 1.0,
+                }
+            )
+        error_count = int(self.details.get("sampling_error_count") or 0)
+        if error_count:
+            findings.append(
+                {
+                    "type": "GRID_SAMPLING_ERROR",
+                    "component": "observation_grid_sampling_error_pressure",
+                    "severity": 1.0,
+                    "error_count": error_count,
+                }
+            )
         for index in self.missing_cell_indices:
             findings.append(
                 {
@@ -276,7 +403,10 @@ class TimeGridTrace:
             AccessProcessSlot.TIME,
             payload=self.to_dict(),
             projection_components=self.projection_components,
-            observed=not self.requires_hold,
+            # Partial observation is still an observed T term. Observation gaps
+            # remain explicit O-pressure and HOLD evidence; they must not erase
+            # a simultaneously measured A/S/T residual.
+            observed=bool(self.cells),
             evidence={"time_axis": "fixed_grid"},
         )
 
@@ -318,6 +448,15 @@ def _coerce_cell(cell: TimeGridCell | Mapping[str, Any], spec: TimeGridSpec) -> 
 
 def _cell_pair_findings(before: TimeGridCell, after: TimeGridCell) -> tuple[dict[str, Any], ...]:
     findings: list[dict[str, Any]] = []
+    if before.exists is not None and after.exists is not None and before.exists != after.exists:
+        findings.append(
+            _pair_finding(
+                "GRID_EXISTENCE_DRIFT",
+                "temporal_existence_drift_pressure",
+                before,
+                after,
+            )
+        )
     if before.metadata_vector_hash and after.metadata_vector_hash and before.metadata_vector_hash != after.metadata_vector_hash:
         findings.append(_pair_finding("GRID_HASH_CHANGE", "temporal_hash_change_pressure", before, after))
     if before.file_id and after.file_id and before.file_id != after.file_id:

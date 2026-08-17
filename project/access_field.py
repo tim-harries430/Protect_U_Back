@@ -498,25 +498,40 @@ def build_access_process_vector(
     agency_components: Mapping[str, float] | None = None,
     surface_components: Mapping[str, float] | None = None,
     time_components: Mapping[str, float] | None = None,
+    agency_term: AccessProcessTerm | Mapping[str, Any] | None = None,
+    surface_term: AccessProcessTerm | Mapping[str, Any] | None = None,
+    time_term: AccessProcessTerm | Mapping[str, Any] | None = None,
     phase: AccessFieldPhase | int | None = None,
     details: Mapping[str, Any] | None = None,
 ) -> AccessProcessVector:
     return AccessProcessVector(
         process_ref=process_ref,
-        agency=AccessProcessTerm(
-            AccessProcessSlot.AGENCY,
-            payload=agency_payload,
-            projection_components=agency_components or {},
+        agency=(
+            agency_term
+            if agency_term is not None
+            else AccessProcessTerm(
+                AccessProcessSlot.AGENCY,
+                payload=agency_payload,
+                projection_components=agency_components or {},
+            )
         ),
-        surface=AccessProcessTerm(
-            AccessProcessSlot.SURFACE,
-            payload=surface_payload,
-            projection_components=surface_components or {},
+        surface=(
+            surface_term
+            if surface_term is not None
+            else AccessProcessTerm(
+                AccessProcessSlot.SURFACE,
+                payload=surface_payload,
+                projection_components=surface_components or {},
+            )
         ),
-        time=AccessProcessTerm(
-            AccessProcessSlot.TIME,
-            payload=time_payload,
-            projection_components=time_components or {},
+        time=(
+            time_term
+            if time_term is not None
+            else AccessProcessTerm(
+                AccessProcessSlot.TIME,
+                payload=time_payload,
+                projection_components=time_components or {},
+            )
         ),
         phase=phase,
         details=details or {},

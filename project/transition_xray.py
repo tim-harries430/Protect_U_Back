@@ -23,10 +23,19 @@ from access_equation import (
     XrayObjectState,
     omega_access,
 )
+from access_field import (
+    AccessFieldPhase,
+    AccessProcessSlot,
+    AccessProcessTerm,
+    AccessProcessVector,
+    build_access_process_vector,
+)
+from access_process_equation import FieldFrameDelta, PROCESS_EQUATION, omega_process
 from access_time_grid import (
     TIME_GRID_SCHEMA,
     TimeGridCell,
     TimeGridSpec,
+    TimeGridTrace,
     build_time_grid_trace,
 )
 from archive_container_probe import (
@@ -44,6 +53,7 @@ DEFAULT_HBAR_PHI = 1.0
 DEFAULT_FIELD_WEIGHT_TAU = 0.5
 DEFAULT_FIELD_SHIFT_INVESTIGATION_THRESHOLD = 0.15
 ACCESS_WITNESS_SCHEMA = "omega_access_witness_v0"
+PROCESS_WITNESS_SCHEMA = "omega_process_witness_v0"
 SENSITIVE_PATH_MARKERS = (
     ".env",
     ".phi",
@@ -565,6 +575,85 @@ def transition_access_witness_evidence(witness: Mapping[str, Any] | None) -> tup
         evidence.append(f"omega_access.residual_component:{component}")
     if witness.get("witness_hash"):
         evidence.append(f"omega_access.witness_hash:{witness.get('witness_hash')}")
+    return tuple(str(item) for item in evidence)
+
+
+def build_transition_process_witness(
+    pair: TransitionXrayPair,
+    proposal: CommandProposal,
+    *,
+    time_grid_traces: Sequence[TimeGridTrace] | None = None,
+) -> dict[str, Any]:
+    """Project a sealed X-ray pair into P=A+S-T and attach Omega_process evidence."""
+
+    enter_process, exit_process, traces = _process_vectors_from_transition_pair(
+        pair,
+        proposal,
+        time_grid_traces=time_grid_traces,
+    )
+    piece_ref = f"registered_action:{_sha256_text(proposal.proposal_id)}"
+    result = omega_process(
+        piece_ref=piece_ref,
+        enter_process=enter_process,
+        exit_process=exit_process,
+        frame_delta=FieldFrameDelta(
+            {},
+            frame_ref=pair.pair_hash,
+            details={
+                "source": "transition_xray_pair",
+                "mode": "zero_untrusted_frame_delta",
+            },
+        ),
+        t_auth=None,
+    )
+    result_payload = result.to_dict()
+    payload: dict[str, Any] = {
+        "schema": PROCESS_WITNESS_SCHEMA,
+        "operator": "omega_process",
+        "equation": PROCESS_EQUATION,
+        "state": result.state.value,
+        "piece_ref": piece_ref,
+        "requires_hold": result.requires_hold,
+        "field_pressure": result.field_pressure,
+        "a_delta": result.a_delta,
+        "s_delta": result.s_delta,
+        "t_delta": result.t_delta,
+        "t_residual": result.t_residual,
+        "residual_components": dict(result.residual_components),
+        "explained_components": dict(result.explained_components),
+        "witness_count": len(result.witnesses),
+        "time_grid_trace_count": len(traces),
+        "time_grid_traces": tuple(_time_grid_trace_summary(trace) for trace in traces),
+        "enter_process_hash": _sha256_canonical(enter_process.to_dict()),
+        "exit_process_hash": _sha256_canonical(exit_process.to_dict()),
+        "result": result_payload,
+        "authority": "observe_residual_attach_only",
+        "testimony_only": True,
+    }
+    payload["witness_hash"] = _sha256_canonical(payload)
+    return payload
+
+
+def transition_process_witness_evidence(
+    witness: Mapping[str, Any] | None,
+) -> tuple[str, ...]:
+    if not witness:
+        return ()
+    evidence = [
+        f"omega_process.schema:{witness.get('schema')}",
+        f"omega_process.state:{witness.get('state')}",
+        f"omega_process.requires_hold:{str(bool(witness.get('requires_hold'))).lower()}",
+        f"omega_process.field_pressure:{witness.get('field_pressure')}",
+        f"omega_process.a_delta:{witness.get('a_delta')}",
+        f"omega_process.s_delta:{witness.get('s_delta')}",
+        f"omega_process.t_delta:{witness.get('t_delta')}",
+        f"omega_process.t_residual:{witness.get('t_residual')}",
+        f"omega_process.time_grid_trace_count:{witness.get('time_grid_trace_count')}",
+    ]
+    for component in sorted((witness.get("residual_components") or {}).keys()):
+        evidence.append(f"omega_process.residual_component:{component}")
+    if witness.get("witness_hash"):
+        evidence.append(f"omega_process.witness_hash:{witness.get('witness_hash')}")
     return tuple(str(item) for item in evidence)
 
 
@@ -1386,6 +1475,22 @@ def _time_grid_details(
     before: XrayPiece | None,
     after: XrayPiece | None,
 ) -> dict[str, Any] | None:
+    trace = _time_grid_trace(before, after)
+    if trace is None:
+        return None
+    return {
+        "schema": TIME_GRID_SCHEMA,
+        "object_ref": trace.object_ref,
+        "requires_hold": trace.requires_hold,
+        "projection_components": dict(trace.projection_components),
+        "findings": trace.findings,
+    }
+
+
+def _time_grid_trace(
+    before: XrayPiece | None,
+    after: XrayPiece | None,
+) -> TimeGridTrace | None:
     if (
         before is None
         or after is None
@@ -1403,13 +1508,7 @@ def _time_grid_details(
         object_ref=before.key,
         details={"source": "transition_xray_pair"},
     )
-    return {
-        "schema": TIME_GRID_SCHEMA,
-        "object_ref": trace.object_ref,
-        "requires_hold": trace.requires_hold,
-        "projection_components": dict(trace.projection_components),
-        "findings": trace.findings,
-    }
+    return trace
 
 
 def _time_grid_cell_from_piece(
@@ -1422,6 +1521,7 @@ def _time_grid_cell_from_piece(
     return TimeGridCell(
         index=index,
         expected_ts_ns=expected_ts_ns,
+        exists=piece.exists,
         sampled_at_ns=expected_ts_ns,
         metadata_vector_hash=_piece_metadata_vector_hash(piece),
         mtime_ns=_int_or_none(details.get("mtime_ns")),
@@ -1458,6 +1558,196 @@ def _piece_metadata_vector_hash(piece: XrayPiece) -> str:
         "symlink_target": details.get("symlink_target"),
     }
     return _sha256_canonical(payload)
+
+
+def _process_vectors_from_transition_pair(
+    pair: TransitionXrayPair,
+    proposal: CommandProposal,
+    *,
+    time_grid_traces: Sequence[TimeGridTrace] | None = None,
+) -> tuple[AccessProcessVector, AccessProcessVector, tuple[TimeGridTrace, ...]]:
+    pair_traces = _process_time_grid_traces(pair)
+    if time_grid_traces is None:
+        traces = pair_traces
+    else:
+        # The live meter closes the between-endpoint gap; the canonical pair
+        # still contributes bounded content/object deltas that metadata-only
+        # beats may not see. Add only changed pair traces to avoid duplicating
+        # a stable target.
+        traces = tuple(time_grid_traces) + tuple(
+            trace for trace in pair_traces if trace.projection_components
+        )
+    enter_time, exit_time = _process_time_terms(pair, traces)
+    process_token = _sha256_text(proposal.proposal_id)
+    return (
+        build_access_process_vector(
+            process_ref=f"process:enter:{process_token}",
+            agency_term=_agency_process_term(pair.enter),
+            surface_term=_surface_process_term(pair.enter),
+            time_term=enter_time,
+            phase=AccessFieldPhase.ENTER,
+            details={
+                "source": "transition_xray_frame",
+                "projection": "A_plus_S_minus_T",
+            },
+        ),
+        build_access_process_vector(
+            process_ref=f"process:exit:{process_token}",
+            agency_term=_agency_process_term(pair.exit),
+            surface_term=_surface_process_term(pair.exit),
+            time_term=exit_time,
+            phase=AccessFieldPhase.EXIT,
+            details={
+                "source": "transition_xray_frame",
+                "projection": "A_plus_S_minus_T",
+            },
+        ),
+        traces,
+    )
+
+
+def _time_grid_trace_summary(trace: TimeGridTrace) -> dict[str, Any]:
+    details = dict(trace.details)
+    return {
+        "object_ref_hash": _sha256_text(str(trace.object_ref or "")),
+        "cell_count": len(trace.cells),
+        "missing_cell_indices": trace.missing_cell_indices,
+        "finding_types": tuple(
+            str(finding.get("type")) for finding in trace.findings
+        ),
+        "projection_components": dict(trace.projection_components),
+        "requires_hold": trace.requires_hold,
+        "sampling": dict(details.get("sampling") or {}),
+    }
+
+
+def _agency_process_term(frame: TransitionXrayFrame) -> AccessProcessTerm:
+    action_pieces = tuple(piece for piece in frame.pieces if piece.kind == "registered_action")
+    responsibility_pieces = tuple(
+        piece for piece in frame.pieces if piece.kind == "skill_responsibility"
+    )
+    observed = bool(action_pieces and responsibility_pieces) and not any(
+        _piece_blindspot(piece) for piece in (*action_pieces, *responsibility_pieces)
+    )
+    components: dict[str, float] = {}
+    if action_pieces:
+        components["agency_registered_action_pressure"] = max(
+            _piece_pressure(piece) for piece in action_pieces
+        )
+    if responsibility_pieces:
+        components["agency_responsibility_pressure"] = max(
+            _piece_pressure(piece) for piece in responsibility_pieces
+        )
+    if not observed:
+        components["observation_agency_pressure"] = 1.0
+    return AccessProcessTerm(
+        AccessProcessSlot.AGENCY,
+        payload={
+            "registered_action_hashes": tuple(piece.piece_hash for piece in action_pieces),
+            "responsibility_hashes": tuple(
+                piece.piece_hash for piece in responsibility_pieces
+            ),
+            "responsibility_states": tuple(
+                str(piece.details.get("state") or "unknown")
+                for piece in responsibility_pieces
+            ),
+        },
+        projection_components=components,
+        observed=observed,
+        evidence={"projection_source": "registered_action_and_skill_responsibility"},
+        details={"phase": frame.phase.value},
+    )
+
+
+def _surface_process_term(frame: TransitionXrayFrame) -> AccessProcessTerm:
+    action_pieces = tuple(piece for piece in frame.pieces if piece.kind == "registered_action")
+    targets = _target_path_pieces(frame)
+    blind_spots = tuple(piece.key for piece in targets if _piece_blindspot(piece))
+    observed = bool(action_pieces) and not blind_spots
+    components: dict[str, float] = {}
+    if action_pieces:
+        components["surface_command_pressure"] = max(
+            _piece_pressure(piece) for piece in action_pieces
+        )
+    if targets:
+        components["surface_target_pressure"] = max(
+            _piece_pressure(piece) for piece in targets
+        )
+    if blind_spots:
+        components["observation_surface_pressure"] = 1.0
+    return AccessProcessTerm(
+        AccessProcessSlot.SURFACE,
+        payload={
+            "command_surface_hashes": tuple(piece.piece_hash for piece in action_pieces),
+            "targets": tuple(
+                {
+                    "piece_key_hash": _sha256_text(piece.key),
+                    "piece_hash": piece.piece_hash,
+                    "exists": piece.exists,
+                    "type": piece.type,
+                    "resolved_path_hash": _sha256_text(_piece_resolved_path(piece) or ""),
+                }
+                for piece in targets
+            ),
+        },
+        projection_components=components,
+        observed=observed,
+        evidence={"projection_source": "command_and_explicit_target_surfaces"},
+        details={
+            "phase": frame.phase.value,
+            "blind_spot_count": len(blind_spots),
+        },
+    )
+
+
+def _process_time_grid_traces(pair: TransitionXrayPair) -> tuple[TimeGridTrace, ...]:
+    enter = {piece.key: piece for piece in _target_path_pieces(pair.enter)}
+    exit_ = {piece.key: piece for piece in _target_path_pieces(pair.exit)}
+    traces: list[TimeGridTrace] = []
+    for key in sorted(set(enter) & set(exit_)):
+        before = enter[key]
+        after = exit_[key]
+        if before.exists is False and after.exists is False:
+            continue
+        trace = _time_grid_trace(before, after)
+        if trace is not None:
+            traces.append(trace)
+    return tuple(traces)
+
+
+def _process_time_terms(
+    pair: TransitionXrayPair,
+    traces: Sequence[TimeGridTrace],
+) -> tuple[AccessProcessTerm, AccessProcessTerm]:
+    trace_terms = tuple(trace.to_process_time_term() for trace in traces)
+    components: dict[str, float] = {}
+    for term in trace_terms:
+        for component, pressure in term.projection_components.items():
+            components[component] = max(components.get(component, 0.0), pressure)
+    observed = all(term.observed for term in trace_terms)
+    trace_payload = tuple(trace.to_dict() for trace in traces)
+    common = {
+        "pair_hash": pair.pair_hash,
+        "trace_count": len(traces),
+        "traces": trace_payload,
+    }
+    enter_term = AccessProcessTerm(
+        AccessProcessSlot.TIME,
+        payload={**common, "projection_role": "enter_baseline"},
+        projection_components={component: 0.0 for component in components},
+        observed=observed,
+        evidence={"time_axis": "fixed_grid", "projection": "baseline"},
+        details={"mode": "enter_baseline_exit_pair_trace_v0"},
+    )
+    exit_term = AccessProcessTerm(
+        AccessProcessSlot.TIME,
+        payload={**common, "projection_role": "exit_pair_trace"},
+        projection_components=components,
+        observed=observed,
+        evidence={"time_axis": "fixed_grid", "projection": "pair_trace"},
+        details={"mode": "enter_baseline_exit_pair_trace_v0"},
+    )
+    return enter_term, exit_term
 
 
 def _access_input_from_transition_pair(

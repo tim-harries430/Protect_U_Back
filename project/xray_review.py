@@ -20,6 +20,7 @@ from transition_xray import (
     hash_unavailable,
     scan_transition_xray,
     transition_access_witness_evidence,
+    transition_process_witness_evidence,
 )
 from xray_field import XrayFieldObservation, sample_xray_potential_field
 from xray_transport import XrayTransportSeal
@@ -261,10 +262,17 @@ def audit_with_xray_review(
     else:
         review = _review_from_signals(seal_disguise(base.xray_transport))
     reviewed = escalate_decision(base, review)
-    access_testimony = _access_witness_testimony(base.xray_transport)
-    if access_testimony is None:
+    equation_testimonies = tuple(
+        testimony
+        for testimony in (
+            _access_witness_testimony(base.xray_transport),
+            _process_witness_testimony(base.xray_transport),
+        )
+        if testimony is not None
+    )
+    if not equation_testimonies:
         return reviewed
-    return reaggregate_parallel_decision(reviewed, (access_testimony,))
+    return reaggregate_parallel_decision(reviewed, equation_testimonies)
 
 
 def _access_witness_testimony(
@@ -291,6 +299,37 @@ def _access_witness_testimony(
             "minimum_action": witness.get("minimum_action"),
             "residual_count": witness.get("residual_count"),
             "explained_count": witness.get("explained_count"),
+            "witness_hash": witness.get("witness_hash"),
+            "testimony_only": True,
+        },
+    )
+
+
+def _process_witness_testimony(
+    seal: XrayTransportSeal | None,
+) -> EvidenceTestimony | None:
+    if seal is None or not seal.process_witness:
+        return None
+    witness = dict(seal.process_witness)
+    disposition = (
+        EvidenceDisposition.HOLD
+        if bool(witness.get("requires_hold"))
+        else EvidenceDisposition.PASS
+    )
+    state = str(witness.get("state") or "UNKNOWN")
+    return EvidenceTestimony(
+        stage=EvidenceStage.DECODE_REVIEW,
+        disposition=disposition,
+        reason_code=f"OMEGA_PROCESS_{state}",
+        detail="Omega process witness attached as decode testimony.",
+        evidence=transition_process_witness_evidence(witness),
+        metadata={
+            "overlay": "omega_process",
+            "state": state,
+            "field_pressure": witness.get("field_pressure"),
+            "residual_components": tuple(
+                sorted((witness.get("residual_components") or {}).keys())
+            ),
             "witness_hash": witness.get("witness_hash"),
             "testimony_only": True,
         },

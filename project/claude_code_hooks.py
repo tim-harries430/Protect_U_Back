@@ -128,7 +128,10 @@ def run_pretool_admission(
     proposal = proposal_from_action(action)
     cid = _event_correlation_id(event, action=action)
 
-    handle = open_xray_transport(proposal)
+    # PreToolUse and PostToolUse are separate hook processes. An in-memory beat
+    # monitor cannot survive that boundary; the persisted outer handle remains
+    # endpoint-only. The in-process parallel X-ray still runs its beat sampler.
+    handle = open_xray_transport(proposal, enable_beat_sampling=False)
     state_path = _state_path(cid, event, env)
     project_root = _project_root_for_action(action)
     decision = _audit_action(action)
