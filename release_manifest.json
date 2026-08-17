@@ -81,6 +81,7 @@
     "project/access_time_grid.py",
     "project/adapter_wall.py",
     "project/agent_control_surface.py",
+    "project/archive_container_probe.py",
     "project/audit_layer.py",
     "project/autopsy_report.py",
     "project/baseline_guards.py",
@@ -136,6 +137,8 @@
     "project/scene_seed.py",
     "project/task_guard.py",
     "project/temporal_continuity.py",
+    "project/tests/test_access_process_equation.py",
+    "project/tests/test_access_time_grid.py",
     "project/tests/test_capability_wall.py",
     "project/tests/test_claude_code_hooks.py",
     "project/tests/test_codex_bash_guard.py",
@@ -160,6 +163,8 @@
     "project/tests/test_pub_os_visibility.py",
     "project/tests/test_pub_os_warden.py",
     "project/tests/test_pub_run.py",
+    "project/tests/test_redteam_hardcore_windows_pub.py",
+    "project/tests/test_xray_transport.py",
     "project/transition_xray.py",
     "project/xray_field.py",
     "project/xray_prison.py",
@@ -193,5 +198,5 @@
   "no_network": true,
   "no_telemetry": true,
   "offline": true,
-  "release_name": "ProtectUBack_early_access_1.1_local"
+  "release_name": "ProtectUBack_early_access_1.2_local"
 }

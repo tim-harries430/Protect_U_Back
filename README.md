@@ -1,45 +1,29 @@
-﻿# Protect U Back
+# Protect U Back
 
-Protect U Back (PUB) is a local pre-I/O audit gate and PUB-OS-like supervisor for AI coding agents.
+Protect U Back (PUB) is a local pre-tool audit kernel for AI agents.
 
-It is built from one simple rule:
+It is built from one simple rule: an agent action should leave evidence before it is allowed to touch the world.
 
-```text
-An agent action should leave evidence before it is allowed to touch the world.
-```
-
-PUB is not a prompt filter. It does not decide whether language sounds safe. It audits proposed tool use, filesystem movement, shell/process surfaces, and the observable physical state around an action.
-
-PUB-OS is an agent operating boundary, not a replacement for Windows, Linux, an endpoint security product, or a kernel sandbox. Its job is narrower: connected agents enter through PUB-controlled entrypoints, and their declared tool or shell movement is inspected before it reaches real side effects.
+PUB is not a prompt filter. It does not try to decide whether language sounds safe. It audits proposed tool use, filesystem movement, and the physical state around an action.
 
 ```text
 Channel -> Envelope -> X-ray -> Admission -> Tool -> Autopsy -> OT
 ```
 
-This README has three parts:
-
-1. What PUB is in the 1.1 local release.
-2. How to reproduce the credential-egress verification experiment.
-3. How to launch an agent through PUB from bash.
-
----
-
-# Part 1 - PUB 1.1 Overview
-
-## What PUB Does
+## What It Does
 
 PUB sits between an agent/tool runner and real side effects.
 
-It normalizes a proposed action into an auditable envelope, observes the protected surface before and after the motion, and sends unclear or changed movement to `HOLD` for later judgment.
+It normalizes an action proposal into an auditable envelope, observes the protected surface before and after the motion, and sends unclear or changed movement to HOLD for later judgment.
 
-The first goal is not to name every attack perfectly. The first goal is stricter:
+The first goal is not to prove every attack name. The first goal is stricter:
 
 ```text
-If a protected file, process surface, or boundary moved, changed, vanished, appeared, or became unobservable,
+If a protected file or process surface moved, changed, vanished, appeared, or became unobservable,
 PUB must produce evidence and stop silent passage.
 ```
 
-## From v0.14 To v1.1
+## The v1.0 Local Baseline
 
 v0.14 froze the first complete architecture slice:
 
@@ -55,26 +39,23 @@ v0.14 froze the first complete architecture slice:
 - Claude Code hook connector: `PreToolUse` and `PostToolUse`
 - local release packaging for offline review
 
-v1.0 kept that boundary and added connected-agent supervision and Windows observation work:
+v1.0 keeps that boundary and adds the missing connection and Windows
+observation work:
 
-- Claude Code hooks match all tools with `matcher: "*"`, not only a small Bash/Edit set
-- unmodelled Claude Code tools route to explicit review instead of silent allow
-- hardened `safe_resolve()` path handling turns malformed or hostile paths into blind spots instead of auditor crashes
+- Claude Code hooks now match all tools with `*`, not only a small Bash/Edit
+  set
+- unmodelled Claude Code tools are routed to explicit review instead of silent
+  allow
+- legacy `pub_gate_switch.json` disarm requests are ignored; blocking stays armed
+- hardened `safe_resolve()` path handling turns malformed or hostile paths into
+  blind spots instead of auditor crashes
 - NTFS reparse points are named as `reparse_point` and carry `reparse_tag`
-- NTFS alternate data streams are separated by metadata-vector evidence instead of collapsing onto the host `file_id`
-- `temporal_continuity.py` adds sequence memory for read-then-egress and read-then-opaque-exec patterns across separate, observed tool calls
-- PUB-OS introduces supervised agent entry instead of trusting an already-running desktop session
-- Claude Code (`cc`) is covered through all-tool hooks, fail-closed ledger witness, and explicit review for unmodelled tools
-- Codex CLI (`cd`) is covered through a PUB shell guard entrypoint that records shell pre/post evidence and blocks dangerous side effects before execution
-
-v1.1 keeps the same audit boundary and makes the local operator path clearer:
-
-- the release carries a customer-facing agent launcher
-- `cc --cage` can start Claude Code inside a Linux/WSL2 `bwrap` cage when the host supports it
-- gate-only mode remains available for macOS or hosts without `bwrap`
-- `--cage` is fail-closed: if the cage cannot be built, the launcher stops instead of silently running uncaged
-- the package includes additional daily-workflow, redteam, and evidence reports under `test/` and `reports/`
-- Codex and Claude Code remain supervised only when they enter through PUB-owned entrypoints
+- NTFS alternate data streams are separated by metadata-vector evidence instead
+  of collapsing onto the host `file_id`
+- `temporal_continuity.py` adds a sequence-memory layer for read-then-egress and
+  read-then-opaque-exec patterns **across separate, observed tool calls**. A
+  single opaque subprocess that performs both the read and the egress internally
+  is not caught — see "Current Limits"
 
 The important boundary is unchanged:
 
@@ -91,7 +72,7 @@ X-ray is the isolated witness layer.
 
 It is modeled as a closed sphere-prison filled with a potential field. A command or tool call enters as an envelope `R(m)`. X-ray takes an enter snapshot, watches the bound pieces, takes an exit snapshot, and reports residual movement.
 
-X-ray does not grant permission. It does not execute tools. It does not kill processes. It only returns suspicion, witnesses, field pressure, continuity state, and `HOLD` signals.
+X-ray does not grant permission. It does not execute tools. It does not kill processes. It only returns suspicion, witnesses, field pressure, continuity state, and HOLD signals.
 
 ## Process Equation
 
@@ -115,7 +96,7 @@ Omega_process = O * (P_exit typed-diff P_enter typed-diff T_auth)
 
 `O` is the observation operator. If the scene is complete, PUB computes residuals. If observation is partial, it computes the visible part and reports blind spots. If the state is unknown, unobserved, or scene-contaminated, PUB does not fake continuity proof. It holds.
 
-Core rule:
+This is the core rule:
 
 ```text
 Observed mutation can be under-classified.
@@ -128,7 +109,7 @@ Unobserved mutation cannot be silently accepted.
 
 It describes the scene around the action: OS/filesystem behavior, boundary root, permission mode, path rules, clock semantics, hook configuration, and untouched surrounding paths.
 
-`SceneReplayGuard` protects those surroundings. It scans before replay and after replay. If an untouched surrounding object changes, disappears, appears, or cannot be fully hashed, the scene becomes contaminated or unobserved and must `HOLD`.
+`SceneReplayGuard` protects those surroundings. It scans before replay and after replay. If an untouched surrounding object changes, disappears, appears, or cannot be fully hashed, the scene becomes contaminated or unobserved and must HOLD.
 
 Seed keeps the crime scene stable. X-ray observes the body. Autopsy explains the damage.
 
@@ -146,283 +127,176 @@ Did the proposed process touch or alter the protected physical state?
 
 If yes, it must leave a receipt.
 
+## Current Verification
+
+Current v1.0 local checks include:
+
+```text
+Release / connector / hook / temporal / Windows checks: 46 passed
+Temporal continuity + Windows hardcore checks:          17 passed
+Windows reparse / ADS evidence cases:                   4 / 4 intercepted
+```
+
+The light regression covers:
+
+- `SceneSeed`
+- `SceneReplayGuard`
+- access field coordinates
+- T-axis time grid
+- `Omega_process`
+- transition X-ray
+- sphere prison / field / transport
+- Claude Code hooks and connector
+- Claude Code all-tool hook coverage and unknown-tool review
+- temporal continuity sequence-memory tests
+- NTFS junction / reparse point observation
+- NTFS alternate data stream observation
+- OpenClaw / Kimi / OpenHarness connector guards
+- local release packaging
+- Windows redteam cases
+
+External hardcore redteam is treated as pressure testing, not as the release gate. The current useful distinction is:
+
+```text
+silent escape          -> unacceptable
+caught but unnamed     -> autopsy precision gap
+environment blocked    -> replay/host capability issue
+```
+
+## Quickstart
+
+From a local release package:
+
+```powershell
+cd ProtectUBack_early_access_1.2_local
+python project\protect_launcher.py audit test\sandbox_gateway_cases.json
+```
+
+From the source tree:
+
+```powershell
+cd C:\dev\sp
+python -m pytest test_scene_seed.py test_scene_replay_guard.py test_access_field.py test_access_time_grid.py test_access_process_equation.py -q
+```
+
+Build a local review package:
+
+```powershell
+cd C:\dev\sp
+python build_local_release.py
+```
+
+## Claude Code Hook
+
+PUB can connect to Claude Code through local hooks:
+
+```text
+PreToolUse  -> pretool_admission.py
+PostToolUse -> posttool_autopsy.py
+```
+
+The hook layer blocks before Claude's own permission ask when PUB has enough reason to hold. After allowed tool execution, posttool autopsy closes the X-ray window and writes evidence.
+
+The connector is local and reversible. It modifies Claude Code project hook settings; it does not require a cloud service.
+
+In v1.0 the connector uses `matcher: "*"` so every Claude Code tool enters the
+hook. Tools PUB can model are audited directly. Tools it cannot model are held
+for explicit review with `UNKNOWN_CAPABILITY` rather than being silently allowed.
+
+`pub_gate_switch.json` is now legacy compatibility only. A stale or requested
+off state is recorded as ignored; it cannot stop blocking, escalation, posttool
+autopsy, or fail-closed behavior.
+
+## Windows Evidence
+
+v1.0 adds a focused Windows evidence report:
+
+```text
+evidence/windows_reparse_ads_report.md
+evidence/windows_reparse_ads_report.json
+```
+
+The report covers four NTFS cases:
+
+- junction / reparse point escaping the boundary
+- junction / reparse point staying inside the boundary but still carrying a
+  redirect surface
+- alternate data stream sharing the host file id
+- alternate data stream hidden from normal directory enumeration
+
+All four were intercepted. The important result is not that every mechanism name
+is final; it is that these Windows-specific disguises no longer pass as ordinary
+files or folders.
+
+## What To Review
+
+If you are reviewing this project, please attack these boundaries:
+
+1. Can PUB reliably sit before agent tool-use without becoming the executor?
+2. Are X-ray enter/exit observations enough to prove protected movement?
+3. Is `HASH_MUTATED -> HOLD` a defensible first verdict?
+4. Is `SceneSeed` cleanly separated from evidence and autopsy output?
+5. Can redteam cases create silent escape rather than only under-classification?
+6. Does any layer accidentally claim execution authority?
+
+Good reviews should include a reproducible case, not only an opinion.
+
+## What PUB Does Not Do
+
+PUB is not:
+
+- an antivirus engine
+- an endpoint security replacement
+- an OS sandbox
+- a cloud service
+- a prompt moderation layer
+- a final judge with sole execution authority
+
+PUB is a local evidence gate. It should make unsafe or unclear tool movement visible before it reaches the real world.
+
 ## Current Limits
 
-PUB 1.1 is still a local pre-I/O audit gate and supervised agent boundary. It is not yet a host-wide syscall monitor.
+v1.0 is still an early-access local release. It improves the audit shell and
+Windows observation layer before solving every forensic label.
 
-Current boundaries:
+Known next work:
 
-- PUB supervises connected agent entrypoints it owns.
-- Claude Code enters through PUB hooks and, on Linux/WSL2, can be launched inside a `bwrap` cage.
-- Codex CLI enters through the PUB shell guard path.
-- Already-running desktop agents are outside this boundary unless they were started through a PUB-controlled connector.
-- Effects hidden entirely inside an opaque child process remain admissible only when they are visible through the supervised tool/shell surface or the cage boundary. Otherwise they must `HOLD` or be caught later by stronger host sensors.
-- Downloaded or externally produced files remain suspect inputs and must be admitted again before trust.
+- fuller `P_auth` authorization delta
+- direct runtime integration for temporal continuity where required
+- better hardlink / junction / ADS mechanism labels
+- stronger mtime/ctime replay semantics
+- multi-auditor voting and separated verdict panels
+- cleaner public evidence docs
+
+Known limitation (red-team, reproducible):
+
+PUB infers an action's effects from the tool-call surface — the command text and
+its declared targets. An opaque subprocess such as `python script.py` is a black
+box to that surface: it parses to "read-only, no targets", so a secret read plus
+a network egress performed *inside one subprocess* passes every layer (spatial
+gate, X-ray review, X-ray transition snapshot, and the temporal sequence judge).
+The snapshot layers are blind here by construction — a read copies bytes without
+mutating any file, leaving no state delta to observe, and PUB does not watch the
+network. Spelling the same action out in the command (e.g. `curl ... "$(cat
+.env)"`) is correctly killed.
+
+This is the advisory-vs-mandatory boundary: PUB is a cooperative, user-space
+reference monitor over declared tool calls. Catching effects hidden inside an
+opaque child process requires mandatory interposition at the syscall boundary
+(minifilter/WFP on Windows, eBPF on Linux) feeding the same gate — tracked above
+as "direct runtime integration".
 
 These are not reasons to weaken the boundary.
 
 ```text
 No update may silently weaken the audit boundary.
 ```
-
----
-
-# Part 2 - Quick Credential-Egress Verification
-
-This section explains how to reproduce the credential-egress verification experiment.
-
-The experiment uses fake API keys only. No real account is touched. The point is to show the difference between:
-
-- PUB's pre-I/O judgment before the request runs
-- the real network/server response if the gate is deliberately bypassed for the experiment
-
-## TL;DR
-
-A fake GitHub token is sent to GitHub's API endpoint.
-
-Expected result:
-
-```text
-HTTP 401 Bad credentials
-```
-
-If the response includes `x-github-request-id`, the request reached GitHub's servers and was processed by GitHub. The fake token was rejected server-side.
-
-The important claim is not that the fake key works. It does not. The claim is that a real egress attempt can be observed, blocked by PUB, and independently reproduced.
-
-## Read The Published Result
-
-Open:
-
-```text
-runs/blast-p2-github/autopsy.md
-runs/blast-p2-github/summary.json
-```
-
-In `summary.json`, look for these fields:
-
-```json
-"gate_dryrun": { "decision": "KILL", "reason_code": "CRITICAL_KILL" }
-"bypassed_gate": true
-"real_egress": { "http_status": 401, "http_reason": "Unauthorized" }
-"github_request_id": "..."
-```
-
-Meaning:
-
-- PUB said the action should be killed before execution.
-- The experiment deliberately bypassed the gate to observe reality.
-- GitHub returned a real `401 Unauthorized` response.
-- A GitHub request ID proves the request reached GitHub-side infrastructure.
-
-## Reproduce The Headline With curl
-
-You do not need PUB to reproduce GitHub's server-side behavior. You only need `curl`.
-
-Mac/Linux/WSL/Git Bash:
-
-```bash
-curl -s -o /dev/null -w "HTTP %{http_code}\n" \
-  -H "Authorization: Bearer ghp_THIS_IS_A_FAKE_TOKEN_xxxxxxxxxxxxxxxxxx" \
-  -H "User-Agent: blast-probe" \
-  https://api.github.com/user
-```
-
-Expected output:
-
-```text
-HTTP 401
-```
-
-Now print the status, request ID, and message:
-
-```bash
-curl -s -D - \
-  -H "Authorization: Bearer ghp_THIS_IS_A_FAKE_TOKEN_xxxxxxxxxxxxxxxxxx" \
-  -H "User-Agent: blast-probe" \
-  https://api.github.com/user | grep -iE "HTTP/|x-github-request-id|message"
-```
-
-Expected output should look like:
-
-```text
-HTTP/2 401
-x-github-request-id: 813F:0C22:27BDD6C:2D18EBE:6A2E55A2
-  "message": "Bad credentials",
-```
-
-The request ID changes every run. That is normal. The invariant is:
-
-```text
-HTTP 401 + a GitHub request ID exists
-```
-
-## Verify Published Files Were Not Tampered With
-
-Each run folder ships a `SHA256SUMS.txt` file. It records the SHA-256 of every other file in that folder at the time the evidence was generated.
-
-Example:
-
-```bash
-cd runs/blast-p2-github
-```
-
-Linux:
-
-```bash
-sha256sum -c SHA256SUMS.txt
-```
-
-macOS:
-
-```bash
-shasum -a 256 -c SHA256SUMS.txt
-```
-
-Expected output:
-
-```text
-autopsy.json: OK
-autopsy.md: OK
-seed.json: OK
-summary.json: OK
-```
-
-If any line says `FAILED`, the file was changed after sealing.
-
-## What This Proves
-
-Proves:
-
-- A fake credential egress attempt can reach a real server-side auth surface.
-- GitHub correctly rejects the fake credential with `401 Bad credentials`.
-- PUB's dry-run gate classified the same movement as `KILL` before execution.
-- The evidence files can be checked with ordinary SHA-256 tools.
-
-Does not prove:
-
-- Anything about a real or valid account.
-- That GitHub is insecure.
-- That PUB is a kernel-level network monitor.
-- That every opaque child process is fully visible without stronger host sensors.
-
-The experiment is useful because it separates gate judgment, controlled bypass, real network response, and sealed evidence.
-
----
-
-# Part 3 - Launching PUB From bash
-
-After unpacking the release, set two variables:
-
-```bash
-PUB=/path/to/ProtectUBack_early_access_1.1_local   # unpacked PUB release
-WORK=/path/to/your/project                         # project to supervise; must be outside PUB
-```
-
-`WORK` must be outside `PUB`. Do not run the agent with the protected PUB source tree as the writable project.
-
-## Linux / Windows WSL2: Gate + Cage
-
-Use this when `bubblewrap` (`bwrap`) is available and the agent can run as a native Linux process:
-
-```bash
-python3 "$PUB/project/pub_agent_launcher.py" cc --cage \
-  --project-root "$WORK" \
-  --protect-root "$PUB/project"
-```
-
-This performs the full launch flow:
-
-```text
-connect (POSIX hook) -> gate -> verify -> start claude inside the bwrap cage
-```
-
-## macOS Or Hosts Without bwrap: Gate Only
-
-Use the same command without `--cage`:
-
-```bash
-python3 "$PUB/project/pub_agent_launcher.py" cc \
-  --project-root "$WORK" \
-  --protect-root "$PUB/project"
-```
-
-This still connects the POSIX hook, runs the gate, verifies the setup, and starts `claude`, but it does not provide the bwrap OS cage. macOS does not have bwrap; OS-level isolation for macOS would need a separate `sandbox-exec` path.
-
-## Platform Matrix
-
-| Platform | Command | Prerequisites |
-| --- | --- | --- |
-| Linux | Use `--cage` | `bwrap`, unprivileged user namespaces, native Linux `claude` |
-| Windows | Run the `--cage` command inside WSL2 | Same as Linux; install `claude` in WSL with `npm i -g`, and verify it is not a Windows `.exe` |
-| macOS | Omit `--cage` | Gate-only mode; no bwrap cage |
-
-## Fail-Closed Guarantee
-
-If `--cage` is requested but the host cannot build the cage, the launcher stops instead of silently running uncaged.
-
-Typical reasons include:
-
-- non-Linux host
-- missing `bwrap`
-- disabled unprivileged user namespaces
-- `claude` resolving to a Windows `.exe` through WSL interop
-
-Expected operator-facing message:
-
-```text
---cage requested but no cage on this host (...). Drop --cage to run gate-only.
-```
-
-## Important WSL Check
-
-Inside WSL, `claude` must be the native Linux version. A Windows `.exe` reached through WSL interop cannot be confined by bwrap.
-
-Check before launching:
-
-```bash
-file "$(which claude)"
-```
-
-The result should identify a Linux executable or script path, not a Windows PE `.exe`.
-
-## Minimal Release Audit Command
-
-From a local release package, you can still run a direct audit case:
-
-```bash
-python3 "$PUB/project/protect_launcher.py" audit "$PUB/test/sandbox_gateway_cases.json"
-```
-
-This is a quick package sanity check. It is separate from launching a supervised agent.
-
-## Review Targets
-
-If you are reviewing PUB, attack these boundaries:
-
-1. Can PUB reliably sit before agent tool use without becoming the executor?
-2. Are X-ray enter/exit observations enough to prove protected movement?
-3. Is `HASH_MUTATED -> HOLD` a defensible first verdict?
-4. Is `SceneSeed` cleanly separated from evidence and autopsy output?
-5. Can redteam cases create silent escape rather than only under-classification?
-6. Does any layer accidentally claim execution authority?
-7. Does an agent ever get to self-report containment instead of entering through PUB-owned launch paths?
-
-Good reviews should include a reproducible case, not only an opinion.
-
 ## One-Sentence Summary
 
-Protect U Back is a local pre-I/O audit gate and PUB-OS-like supervisor for AI agents: it passes safe proposals, holds ambiguous proposals, and kills dangerous side effects with an autopsy trail before tools execute.
+Protect U Back is a local pre-commit audit gate for AI agents: it passes safe
+proposals, holds ambiguous proposals, and kills dangerous side effects with an
+autopsy trail before tools execute.
 
 ## Personal Preference
 
-U better Protect ya back.
-
-
-## Copyright
-
-Copyright (c) 2026 Protect U Back contributors. All rights reserved unless a separate `LICENSE` file states otherwise.
-
-Protect U Back is shared publicly so reviewers can inspect, test, and critique the design.. No permission is granted to redistribute, sublicense, commercialize, or incorporate this work into another product without explicit written permission from the copyright holder.
-
-This project is experimental software. It is provided "as is", without warranty of any kind. Protect U Back is a local agent audit gate and should not be represented as a replacement for an operating-system sandbox, endpoint security product, legal compliance system, or production security boundary.
+u better protect ya back.

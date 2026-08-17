@@ -1,0 +1,11 @@
+Protect U Back local early-access build
+
+This package is offline by design.
+- No cloud service
+- No network requirement
+- No account
+- No daemon
+- No telemetry
+- No auto-update
+
+Boundary: proposal-level pre-commit audit. This is not OS sandboxing.

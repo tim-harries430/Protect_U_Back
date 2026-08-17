@@ -8,10 +8,10 @@ package. Run it in a clean working directory with Python available.
 If you received the release zip directly:
 
 ```powershell
-Get-FileHash .\ProtectUBack_early_access_0.14_local.zip -Algorithm SHA256
-Get-Content .\ProtectUBack_early_access_0.14_local.zip.sha256.txt
-Expand-Archive .\ProtectUBack_early_access_0.14_local.zip -DestinationPath .\review
-cd .\review\ProtectUBack_early_access_0.14_local
+Get-FileHash .\ProtectUBack_early_access_1.2_local.zip -Algorithm SHA256
+Get-Content .\ProtectUBack_early_access_1.2_local.zip.sha256.txt
+Expand-Archive .\ProtectUBack_early_access_1.2_local.zip -DestinationPath .\review
+cd .\review\ProtectUBack_early_access_1.2_local
 ```
 
 If you are starting from the repository, use the zip in `dist/` and extract it
