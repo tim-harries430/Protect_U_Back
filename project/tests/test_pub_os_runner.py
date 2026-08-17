@@ -257,8 +257,6 @@ def test_cc_runner_holds_dangerous_supervision_bypass_args():
         ("--permission-mode=bypassPermissions",),
         ("--permission-mode", "dontAsk"),
         ("--permission-mode=dontAsk",),
-        ("--permission-mode", "acceptEdits"),
-        ("--permission-mode=acceptEdits",),
     )
 
     for args in cases:

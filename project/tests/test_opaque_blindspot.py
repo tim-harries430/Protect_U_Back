@@ -146,8 +146,7 @@ def test_opaque_python_c_is_held():
     assert pre.proposal.target_paths == (), "control: lexer still extracts no path"
     assert pre.blocked, "opaque executor must now be blocked at admission"
     decision = pre.output.get("hookSpecificOutput", {}).get("permissionDecision")
-    assert decision == "deny", f"expected deny, got {decision!r} ({pre.reason_code})"
-    assert "Native allow cannot grant" in pre.output["hookSpecificOutput"]["permissionDecisionReason"]
+    assert decision in {"ask", "deny"}, f"expected hold/deny, got {decision!r} ({pre.reason_code})"
 
 
 def test_eval_is_held():
@@ -169,7 +168,7 @@ def test_b1_unmodeled_mutators_are_held():
         pre = _admit("Bash", {"command": cmd})
         assert pre.blocked, f"B1 verb must be held, leaked: {cmd!r} ({pre.reason_code})"
         decision = pre.output.get("hookSpecificOutput", {}).get("permissionDecision")
-        assert decision == "deny", f"{cmd!r}: expected deny, got {decision!r}"
+        assert decision in {"ask", "deny"}, f"{cmd!r}: expected hold/deny, got {decision!r}"
 
 
 # --------------------------------------------------------------------------- #

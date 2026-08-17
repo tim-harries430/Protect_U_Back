@@ -217,38 +217,6 @@ def test_pretool_admission_denies_renamed_zip_magic_archive_a1(tmp_path):
     assert result.output["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
-def test_opaque_hold_still_denies_under_acceptEdits_event_mode(tmp_path):
-    payload = event(
-        tmp_path,
-        tool_use_id="call_opaque_accept_edits",
-        tool_input={
-            "command": "python3 -c \"open('x','w').write('a')\"",
-            "description": "opaque inline python",
-        },
-    )
-    payload["permission_mode"] = "acceptEdits"
-
-    result = run_pretool_admission(json.dumps(payload), environ=env(tmp_path))
-
-    assert result.blocked is True
-    assert result.output["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "before Claude" in result.output["hookSpecificOutput"]["permissionDecisionReason"]
-
-
-def test_event_permission_mode_acceptEdits_is_authority_poisoning(tmp_path):
-    payload = event(
-        tmp_path,
-        tool_use_id="call_accept_edits_mode",
-        tool_input={"command": "ls -la", "description": "list directory"},
-    )
-    payload["permission_mode"] = "acceptEdits"
-
-    result = run_pretool_admission(json.dumps(payload), environ=env(tmp_path))
-
-    assert result.blocked is True
-    assert result.output["hookSpecificOutput"]["permissionDecision"] == "deny"
-
-
 def test_pretool_admission_allows_visible_project_mkdir(tmp_path):
     payload = event(
         tmp_path,

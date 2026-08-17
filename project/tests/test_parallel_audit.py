@@ -1,4 +1,5 @@
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -22,7 +23,7 @@ from protect_scan import (
 )
 
 
-PROJECT_ROOT = r"C:\dev\sp"
+PROJECT_ROOT = str(Path(__file__).resolve().parent)
 TEST_DISPOSITION_RANK = {
     EvidenceDisposition.PASS: 0,
     EvidenceDisposition.HOLD: 1,
