@@ -1,0 +1,4 @@
+paper_artifact/paper-jisa-v1/** -text -diff
+paper_experiments/submission_closure/** -text -diff
+releases/*.zip binary
+releases/*.sha256.txt -text -diff

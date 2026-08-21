@@ -1,0 +1,512 @@
+{
+  "ast_exact_match_rate": 0.1,
+  "attack_capture_rate": 1.0,
+  "benign_completion_rate": 0.0,
+  "counts": {
+    "attack_valid": 10,
+    "control_valid": 10,
+    "invalid_injection": 0,
+    "skip_environment": 0
+  },
+  "exact_residual_set_accuracy": 0.2,
+  "false_hold_rate": 1.0,
+  "false_pass_rate": 0.0,
+  "observation_coverage": 1.0,
+  "oracle_sha256": "55718f080b04653899db387d85dd86ef62ffd4e084eea4fa6d00aff42256d09c",
+  "per_case": [
+    {
+      "authority_leak": false,
+      "case_id": "RT01",
+      "gold_components": [
+        "S"
+      ],
+      "gold_residuals": [
+        "OBJECT_SUBSTITUTION"
+      ],
+      "observation_state": "COMPLETE",
+      "outcome": "captured",
+      "pred_components": [
+        "T"
+      ],
+      "pred_residuals": [
+        "OBJECT_SUBSTITUTION",
+        "TEMPORAL_RACE"
+      ],
+      "requires_hold": true,
+      "status": "VALID",
+      "variant": "attack"
+    },
+    {
+      "authority_leak": false,
+      "case_id": "RT01",
+      "gold_components": [],
+      "gold_residuals": [],
+      "observation_state": "COMPLETE",
+      "outcome": "FALSE_HOLD",
+      "pred_components": [
+        "T"
+      ],
+      "pred_residuals": [
+        "OBJECT_SUBSTITUTION",
+        "TEMPORAL_RACE"
+      ],
+      "requires_hold": true,
+      "status": "VALID",
+      "variant": "control"
+    },
+    {
+      "authority_leak": false,
+      "case_id": "RT02",
+      "gold_components": [
+        "S"
+      ],
+      "gold_residuals": [
+        "OBJECT_SUBSTITUTION"
+      ],
+      "observation_state": "COMPLETE",
+      "outcome": "captured",
+      "pred_components": [
+        "O",
+        "S",
+        "T"
+      ],
+      "pred_residuals": [
+        "OBJECT_SUBSTITUTION",
+        "TEMPORAL_RACE"
+      ],
+      "requires_hold": true,
+      "status": "VALID",
+      "variant": "attack"
+    },
+    {
+      "authority_leak": false,
+      "case_id": "RT02",
+      "gold_components": [],
+      "gold_residuals": [],
+      "observation_state": "COMPLETE",
+      "outcome": "FALSE_HOLD",
+      "pred_components": [
+        "O",
+        "T"
+      ],
+      "pred_residuals": [
+        "OBJECT_SUBSTITUTION",
+        "TEMPORAL_RACE"
+      ],
+      "requires_hold": true,
+      "status": "VALID",
+      "variant": "control"
+    },
+    {
+      "authority_leak": false,
+      "case_id": "RT03",
+      "gold_components": [
+        "S",
+        "T"
+      ],
+      "gold_residuals": [
+        "OBJECT_SUBSTITUTION",
+        "TEMPORAL_RACE"
+      ],
+      "observation_state": "COMPLETE",
+      "outcome": "captured",
+      "pred_components": [
+        "T"
+      ],
+      "pred_residuals": [
+        "OBJECT_SUBSTITUTION",
+        "TEMPORAL_RACE"
+      ],
+      "requires_hold": true,
+      "status": "VALID",
+      "variant": "attack"
+    },
+    {
+      "authority_leak": false,
+      "case_id": "RT03",
+      "gold_components": [],
+      "gold_residuals": [],
+      "observation_state": "COMPLETE",
+      "outcome": "FALSE_HOLD",
+      "pred_components": [
+        "T"
+      ],
+      "pred_residuals": [
+        "OBJECT_SUBSTITUTION",
+        "TEMPORAL_RACE"
+      ],
+      "requires_hold": true,
+      "status": "VALID",
+      "variant": "control"
+    },
+    {
+      "authority_leak": false,
+      "case_id": "RT04",
+      "gold_components": [
+        "S"
+      ],
+      "gold_residuals": [
+        "ALIAS_WRITE",
+        "OBJECT_SUBSTITUTION"
+      ],
+      "observation_state": "COMPLETE",
+      "outcome": "captured",
+      "pred_components": [
+        "T"
+      ],
+      "pred_residuals": [
+        "ALIAS_WRITE",
+        "OBJECT_SUBSTITUTION",
+        "TEMPORAL_RACE"
+      ],
+      "requires_hold": true,
+      "status": "VALID",
+      "variant": "attack"
+    },
+    {
+      "authority_leak": false,
+      "case_id": "RT04",
+      "gold_components": [],
+      "gold_residuals": [],
+      "observation_state": "COMPLETE",
+      "outcome": "FALSE_HOLD",
+      "pred_components": [
+        "T"
+      ],
+      "pred_residuals": [
+        "ALIAS_WRITE",
+        "OBJECT_SUBSTITUTION",
+        "TEMPORAL_RACE"
+      ],
+      "requires_hold": true,
+      "status": "VALID",
+      "variant": "control"
+    },
+    {
+      "authority_leak": false,
+      "case_id": "RT05",
+      "gold_components": [
+        "S"
+      ],
+      "gold_residuals": [
+        "CONTAINER_ESCAPE",
+        "OBJECT_SUBSTITUTION",
+        "POINTER_REDIRECTION"
+      ],
+      "observation_state": "COMPLETE",
+      "outcome": "captured",
+      "pred_components": [
+        "T"
+      ],
+      "pred_residuals": [
+        "POINTER_REDIRECTION",
+        "TEMPORAL_RACE"
+      ],
+      "requires_hold": true,
+      "status": "VALID",
+      "variant": "attack"
+    },
+    {
+      "authority_leak": false,
+      "case_id": "RT05",
+      "gold_components": [],
+      "gold_residuals": [],
+      "observation_state": "COMPLETE",
+      "outcome": "FALSE_HOLD",
+      "pred_components": [
+        "T"
+      ],
+      "pred_residuals": [
+        "POINTER_REDIRECTION",
+        "TEMPORAL_RACE"
+      ],
+      "requires_hold": true,
+      "status": "VALID",
+      "variant": "control"
+    },
+    {
+      "authority_leak": false,
+      "case_id": "RT06",
+      "gold_components": [
+        "S"
+      ],
+      "gold_residuals": [
+        "ALIAS_WRITE"
+      ],
+      "observation_state": "COMPLETE",
+      "outcome": "captured",
+      "pred_components": [
+        "O",
+        "T"
+      ],
+      "pred_residuals": [
+        "OBJECT_SUBSTITUTION",
+        "TEMPORAL_RACE"
+      ],
+      "requires_hold": true,
+      "status": "VALID",
+      "variant": "attack"
+    },
+    {
+      "authority_leak": false,
+      "case_id": "RT06",
+      "gold_components": [],
+      "gold_residuals": [],
+      "observation_state": "COMPLETE",
+      "outcome": "FALSE_HOLD",
+      "pred_components": [
+        "O",
+        "T"
+      ],
+      "pred_residuals": [
+        "OBJECT_SUBSTITUTION",
+        "TEMPORAL_RACE"
+      ],
+      "requires_hold": true,
+      "status": "VALID",
+      "variant": "control"
+    },
+    {
+      "authority_leak": false,
+      "case_id": "RT07",
+      "gold_components": [
+        "S"
+      ],
+      "gold_residuals": [
+        "OBJECT_SUBSTITUTION"
+      ],
+      "observation_state": "COMPLETE",
+      "outcome": "captured",
+      "pred_components": [
+        "T"
+      ],
+      "pred_residuals": [
+        "OBJECT_SUBSTITUTION",
+        "TEMPORAL_RACE"
+      ],
+      "requires_hold": true,
+      "status": "VALID",
+      "variant": "attack"
+    },
+    {
+      "authority_leak": false,
+      "case_id": "RT07",
+      "gold_components": [],
+      "gold_residuals": [],
+      "observation_state": "COMPLETE",
+      "outcome": "FALSE_HOLD",
+      "pred_components": [
+        "T"
+      ],
+      "pred_residuals": [
+        "OBJECT_SUBSTITUTION",
+        "TEMPORAL_RACE"
+      ],
+      "requires_hold": true,
+      "status": "VALID",
+      "variant": "control"
+    },
+    {
+      "authority_leak": false,
+      "case_id": "RT08",
+      "gold_components": [
+        "A",
+        "S"
+      ],
+      "gold_residuals": [
+        "OBJECT_SUBSTITUTION",
+        "RESPONSIBILITY_SWAP"
+      ],
+      "observation_state": "COMPLETE",
+      "outcome": "captured",
+      "pred_components": [
+        "T"
+      ],
+      "pred_residuals": [
+        "OBJECT_SUBSTITUTION",
+        "TEMPORAL_RACE"
+      ],
+      "requires_hold": true,
+      "status": "VALID",
+      "variant": "attack"
+    },
+    {
+      "authority_leak": false,
+      "case_id": "RT08",
+      "gold_components": [],
+      "gold_residuals": [],
+      "observation_state": "COMPLETE",
+      "outcome": "FALSE_HOLD",
+      "pred_components": [
+        "T"
+      ],
+      "pred_residuals": [
+        "OBJECT_SUBSTITUTION",
+        "TEMPORAL_RACE"
+      ],
+      "requires_hold": true,
+      "status": "VALID",
+      "variant": "control"
+    },
+    {
+      "authority_leak": false,
+      "case_id": "RT09",
+      "gold_components": [
+        "T"
+      ],
+      "gold_residuals": [
+        "TEMPORAL_RACE"
+      ],
+      "observation_state": "COMPLETE",
+      "outcome": "captured",
+      "pred_components": [
+        "T"
+      ],
+      "pred_residuals": [],
+      "requires_hold": true,
+      "status": "VALID",
+      "variant": "attack"
+    },
+    {
+      "authority_leak": false,
+      "case_id": "RT09",
+      "gold_components": [],
+      "gold_residuals": [],
+      "observation_state": "COMPLETE",
+      "outcome": "FALSE_HOLD",
+      "pred_components": [
+        "T"
+      ],
+      "pred_residuals": [],
+      "requires_hold": true,
+      "status": "VALID",
+      "variant": "control"
+    },
+    {
+      "authority_leak": false,
+      "case_id": "RT10",
+      "gold_components": [
+        "S",
+        "T"
+      ],
+      "gold_residuals": [
+        "ALIAS_WRITE",
+        "OBJECT_SUBSTITUTION",
+        "TEMPORAL_RACE"
+      ],
+      "observation_state": "COMPLETE",
+      "outcome": "captured",
+      "pred_components": [
+        "T"
+      ],
+      "pred_residuals": [
+        "ALIAS_WRITE",
+        "OBJECT_SUBSTITUTION",
+        "TEMPORAL_RACE"
+      ],
+      "requires_hold": true,
+      "status": "VALID",
+      "variant": "attack"
+    },
+    {
+      "authority_leak": false,
+      "case_id": "RT10",
+      "gold_components": [],
+      "gold_residuals": [],
+      "observation_state": "COMPLETE",
+      "outcome": "FALSE_HOLD",
+      "pred_components": [
+        "T"
+      ],
+      "pred_residuals": [
+        "ALIAS_WRITE",
+        "OBJECT_SUBSTITUTION",
+        "TEMPORAL_RACE"
+      ],
+      "requires_hold": true,
+      "status": "VALID",
+      "variant": "control"
+    }
+  ],
+  "residual_macro": {
+    "f1": 0.5013888888888889,
+    "labels_with_support": 6,
+    "precision": 0.5162037037037037,
+    "recall": 0.5347222222222222
+  },
+  "residual_micro": {
+    "f1": 0.6486486486486486,
+    "fn": 5,
+    "fp": 8,
+    "precision": 0.6,
+    "recall": 0.7058823529411765,
+    "tp": 12
+  },
+  "residual_per_label": {
+    "ALIAS_WRITE": {
+      "f1": 0.8,
+      "fn": 1,
+      "fp": 0,
+      "precision": 1.0,
+      "recall": 0.6666666666666666,
+      "support": 3,
+      "tp": 2
+    },
+    "CONTAINER_ESCAPE": {
+      "f1": 0.0,
+      "fn": 1,
+      "fp": 0,
+      "precision": 0.0,
+      "recall": 0.0,
+      "support": 1,
+      "tp": 0
+    },
+    "OBJECT_SUBSTITUTION": {
+      "f1": 0.875,
+      "fn": 1,
+      "fp": 1,
+      "precision": 0.875,
+      "recall": 0.875,
+      "support": 8,
+      "tp": 7
+    },
+    "OBSERVATION_BLINDNESS": {
+      "f1": 0.0,
+      "fn": 0,
+      "fp": 0,
+      "precision": 0.0,
+      "recall": 0.0,
+      "support": 0,
+      "tp": 0
+    },
+    "POINTER_REDIRECTION": {
+      "f1": 1.0,
+      "fn": 0,
+      "fp": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "support": 1,
+      "tp": 1
+    },
+    "RESPONSIBILITY_SWAP": {
+      "f1": 0.0,
+      "fn": 1,
+      "fp": 0,
+      "precision": 0.0,
+      "recall": 0.0,
+      "support": 1,
+      "tp": 0
+    },
+    "TEMPORAL_RACE": {
+      "f1": 0.3333333333333333,
+      "fn": 1,
+      "fp": 7,
+      "precision": 0.2222222222222222,
+      "recall": 0.6666666666666666,
+      "support": 3,
+      "tp": 2
+    }
+  },
+  "schema": "pub.redteam.score.v1",
+  "suite_id": "reeeal-hardcore-production-v1"
+}

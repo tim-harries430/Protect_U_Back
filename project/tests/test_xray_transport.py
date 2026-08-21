@@ -1,3 +1,4 @@
+import dataclasses
 import os
 import time
 
@@ -7,7 +8,12 @@ from parallel_audit import EvidenceDisposition, EvidenceStage, run_parallel_audi
 from phi_registry import PhiRegistry
 from protect_scan import confirm_protect_scan, default_protect_scan_profile
 from xray_prison import leaks_forbidden_authority
-from xray_transport import close_xray_transport, open_xray_transport
+from xray_review import DisguiseAxis, review_proposal
+from xray_transport import (
+    AuthorizationMatchWitness,
+    close_xray_transport,
+    open_xray_transport,
+)
 
 
 def registry(*actor_ids):
@@ -93,11 +99,85 @@ def test_xray_transport_seals_mutation_without_forbidden_authority(tmp_path):
     assert "T" in seal.process_witness["residual_components"]
     assert any(item.startswith("omega_process.witness_hash:") for item in seal.to_evidence())
     assert "xray_transport.testimony_only:true" in seal.to_evidence()
+    authorization = seal.authorization_match
+    assert authorization.fully_matched is True
+    assert authorization.to_dict()["matched_targets"] == (str(target),)
+    assert authorization.to_dict()["matched_effects"] == ("write",)
+    assert authorization.to_dict()["matched_finding_types"] == ("HASH_MUTATED",)
+    assert authorization.authorized_delta_digest.startswith("sha256:")
+    assert payload["authorization_match"] == authorization.to_dict()
+    assert f"xray_authorization.matched_target:{target}" in seal.to_evidence()
+    assert "xray_authorization.matched_effect:write" in seal.to_evidence()
+    assert "xray_authorization.matched_finding_type:HASH_MUTATED" in seal.to_evidence()
     assert leaks_forbidden_authority(payload) is False
     assert "decision" not in payload_text
     assert "verdict" not in payload_text
     assert "can_execute" not in payload_text
     assert "io_executed" not in payload_text
+
+
+def test_authorization_match_is_inside_transport_hash(tmp_path):
+    target = tmp_path / "target.txt"
+    target.write_text("before\n", encoding="utf-8")
+    command_proposal = proposal(tmp_path, target)
+    handle = open_xray_transport(command_proposal)
+    target.write_text("after\n", encoding="utf-8")
+    seal = close_xray_transport(handle, command_proposal)
+
+    altered_match = dataclasses.replace(
+        seal.authorization_match,
+        authorized_delta_digest="sha256:" + "0" * 64,
+    )
+    altered_seal = dataclasses.replace(seal, authorization_match=altered_match)
+
+    assert seal.transport_hash != altered_seal.transport_hash
+    assert seal.to_dict(include_hash=False)["authorization_match"] != (
+        altered_seal.to_dict(include_hash=False)["authorization_match"]
+    )
+
+
+def test_declared_write_does_not_explain_alias_identity_movement(tmp_path):
+    target = tmp_path / "target.txt"
+    alias = tmp_path / "alias.txt"
+    target.write_text("before\n", encoding="utf-8")
+    command_proposal = proposal(tmp_path, target)
+    handle = open_xray_transport(command_proposal)
+
+    os.link(target, alias)
+    seal = close_xray_transport(handle, command_proposal)
+    review = review_proposal(command_proposal, seal=seal)
+
+    assert seal.authorization_match.fully_matched is False
+    assert len(seal.authorization_match.unmatched_findings) == 1
+    assert (
+        seal.authorization_match.unmatched_findings[0].reason
+        == "resource_identity_nlink_movement_not_authorized"
+    )
+    assert review.disposition.value == "QUARANTINE"
+    assert {signal.axis for signal in review.signals} >= {
+        DisguiseAxis.ALIAS,
+        DisguiseAxis.SUBSTITUTION,
+    }
+    assert leaks_forbidden_authority(seal.to_dict()) is False
+
+
+def test_missing_authorization_match_never_relaxes_mutation(tmp_path):
+    target = tmp_path / "target.txt"
+    target.write_text("before\n", encoding="utf-8")
+    command_proposal = proposal(tmp_path, target)
+    handle = open_xray_transport(command_proposal)
+    target.write_text("after\n", encoding="utf-8")
+    seal = close_xray_transport(handle, command_proposal)
+    unbound = dataclasses.replace(
+        seal,
+        authorization_match=AuthorizationMatchWitness(),
+    )
+
+    review = review_proposal(command_proposal, seal=unbound)
+
+    assert unbound.expected_mutation is False
+    assert review.disposition.value == "QUARANTINE"
+    assert any(signal.axis == DisguiseAxis.SUBSTITUTION for signal in review.signals)
 
 
 def test_xray_transport_stable_missing_target_does_not_false_hold_process(tmp_path):

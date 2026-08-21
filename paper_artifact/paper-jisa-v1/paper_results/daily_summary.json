@@ -1,0 +1,101 @@
+{
+  "categories": {
+    "agent_control_surface": {
+      "KILL": 2
+    },
+    "artifact_unpack": {
+      "HOLD": 2
+    },
+    "customer_data": {
+      "HOLD": 1,
+      "PASS": 1
+    },
+    "danger_control": {
+      "HOLD": 1,
+      "KILL": 4
+    },
+    "dataset_build": {
+      "HOLD": 3,
+      "KILL": 1,
+      "PASS": 1
+    },
+    "decoder_dense": {
+      "HOLD": 2,
+      "KILL": 1
+    },
+    "dependency_management": {
+      "HOLD": 3,
+      "PASS": 2
+    },
+    "eval_benchmark": {
+      "HOLD": 3,
+      "KILL": 2,
+      "PASS": 1
+    },
+    "frontend_ui": {
+      "HOLD": 4,
+      "PASS": 1
+    },
+    "git_workflow": {
+      "HOLD": 2,
+      "KILL": 2,
+      "PASS": 2
+    },
+    "notebook_analysis": {
+      "HOLD": 3,
+      "PASS": 2
+    },
+    "paper_research": {
+      "HOLD": 1,
+      "KILL": 1
+    },
+    "presentation": {
+      "HOLD": 2
+    },
+    "prompt_policy": {
+      "HOLD": 3,
+      "PASS": 1
+    },
+    "reporting": {
+      "HOLD": 1,
+      "KILL": 2,
+      "PASS": 1
+    },
+    "secrets": {
+      "KILL": 4
+    },
+    "security_redteam": {
+      "HOLD": 1,
+      "KILL": 1,
+      "PASS": 1
+    },
+    "sre_ops": {
+      "HOLD": 4,
+      "KILL": 4,
+      "PASS": 1
+    },
+    "vibe_coding": {
+      "HOLD": 3,
+      "PASS": 2
+    }
+  },
+  "classifications": {
+    "FRICTION": 4,
+    "HARD_BLOCK": 8,
+    "OK": 67
+  },
+  "dispositions": {
+    "HOLD": 39,
+    "KILL": 24,
+    "PASS": 16
+  },
+  "exact_matches": 67,
+  "preferred_dispositions": {
+    "HOLD": 44,
+    "KILL": 15,
+    "PASS": 20
+  },
+  "rows": 79,
+  "schema": "pub.paper.daily_recomputed.v1",
+  "source_sha256": "5af9b31b5dc58ea42b9f94e19167f381b5736728ad1f1f6aabfe87b2da4ed0a7"
+}

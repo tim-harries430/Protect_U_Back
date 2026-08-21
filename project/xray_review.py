@@ -133,29 +133,31 @@ def single_frame_disguise(frame: TransitionXrayFrame) -> tuple[DisguiseSignal, .
 def seal_disguise(seal: XrayTransportSeal | None) -> tuple[DisguiseSignal, ...]:
     if seal is None:
         return ()
+    authorization_match = getattr(seal, "authorization_match", None)
+    fully_explained = bool(
+        authorization_match is not None
+        and authorization_match.fully_matched
+        and len(authorization_match.matched_findings) == seal.witness_count
+        and not authorization_match.unmatched_findings
+    )
     evidence = (
         f"continuity_state:{seal.continuity_state}",
         f"field_state:{seal.field_state}",
         f"mutation_state:{seal.mutation_state}",
         f"witness_count:{seal.witness_count}",
+        f"authorization_match:{'full' if fully_explained else 'missing_or_partial'}",
+        (
+            "authorized_delta_digest:"
+            f"{getattr(authorization_match, 'authorized_delta_digest', '')}"
+        ),
     )
-    # A declared write/delete changing its declared targets is the JOB, not a disguise.
-    # When close_xray_transport vouches the whole enter->exit transition as the
-    # declared mutation (expected_mutation), the seal has nothing adverse to add: the
-    # mutated/broken/witnessed/distorted readings are all just that change. Genuine
-    # per-piece blindspots and identity swaps (pointer/alias/container-escape) are
-    # reported by single_frame_disguise on the ENTER frame + _field_blindspot_signals,
-    # independent of this seal -- so suppressing here cannot hide them. A declared-READ
-    # op that mutated has expected_mutation False and still quarantines below.
-    if getattr(seal, "expected_mutation", False):
-        return ()
-    # Object-swap evidence: enter and exit disagree, or a witness fired -- the
-    # thing observed is not the thing acted on. THIS is a substitution (quarantine).
+    # Only a complete hashed target/effect/finding match can explain an endpoint
+    # delta. A bare declaration or partial match never relaxes testimony.
     if (
         seal.mutation_state != "STABLE"
         or seal.continuity_state != "CONTINUOUS"
         or seal.witness_count > 0
-    ):
+    ) and not fully_explained:
         return (
             DisguiseSignal(
                 axis=DisguiseAxis.SUBSTITUTION,
@@ -165,12 +167,11 @@ def seal_disguise(seal: XrayTransportSeal | None) -> tuple[DisguiseSignal, ...]:
                 evidence=evidence,
             ),
         )
-    # Field distortion ALONE is an observation blindspot (a piece could not be
-    # vouched for), not a substitution. It HOLDs for review; mapping it to
-    # SUBSTITUTION/QUARANTINE turned benign unhashable / out-of-boundary reads into
-    # hard quarantines (the grounding oracle caught this generalising past the
-    # out-of-boundary patch).
-    if seal.field_state != "STABLE":
+    # UNKNOWN is never explained. DISTORTED is explainable only when every
+    # observed finding has the exact sealed match above.
+    if seal.field_state == "UNKNOWN" or (
+        seal.field_state != "STABLE" and not fully_explained
+    ):
         return (
             DisguiseSignal(
                 axis=DisguiseAxis.OBSERVATION_BLINDSPOT,

@@ -69,25 +69,6 @@ _WRAPPER_VALUE: frozenset[str] = frozenset({"timeout", "nice", "ionice", "stdbuf
 
 _ASSIGNMENT = re.compile(r"^[A-Za-z_]\w*=")
 
-_RECON_ENV_KEYS: frozenset[str] = frozenset(
-    {
-        "tz",
-        "timezone",
-        "http_proxy",
-        "https_proxy",
-        "all_proxy",
-        "no_proxy",
-        "proxy",
-    }
-)
-_RECON_HOST_TOKENS: tuple[str, ...] = (
-    "ifconfig.me",
-    "icanhazip",
-    "ipify",
-    "checkip",
-    "ipinfo",
-)
-
 # interpreter basename -> inline-code flags that mean "arbitrary code follows in
 # the argument vector". A flag matches a token if the token equals it or starts
 # with it (covers glued forms like `python -cprint(1)`).
@@ -301,8 +282,6 @@ def is_opaque_executor(command_text: str) -> tuple[bool, tuple[str, ...]]:
         return False, ()
 
     for segment in _segments(_tokens(command_text)):
-        if len(segment) == 1 and _norm(segment[0]) == "env":
-            return True, ("executor:env", "code_flag:runtime-recon")
         base, rest = _command_word(segment)
         if base is None:
             continue
@@ -317,9 +296,6 @@ def is_opaque_executor(command_text: str) -> tuple[bool, tuple[str, ...]]:
         # `deno eval ...`
         if base == "deno" and rest and _norm(rest[0]) == "eval":
             return True, ("interpreter:deno", "code_flag:eval")
-
-        if _is_runtime_recon_probe(base, rest):
-            return True, (f"executor:{base}", "code_flag:runtime-recon")
 
         if base in _INTERP_FLAGS:
             flags = _INTERP_FLAGS[base]
@@ -392,23 +368,6 @@ def is_opaque_executor(command_text: str) -> tuple[bool, tuple[str, ...]]:
             return True, (f"executor:{base}", "code_flag:unmodellable")
 
     return False, ()
-
-
-def _is_runtime_recon_probe(base: str, rest: list[str]) -> bool:
-    lowered = tuple(str(token).strip().strip("'\"").lower() for token in rest)
-    if base == "date":
-        return any("%z" in token or "%Z" in token for token in rest)
-    if base in {"printenv", "set"}:
-        return not lowered or any(_norm(token) in _RECON_ENV_KEYS for token in lowered)
-    if base == "hostname":
-        return any(token.lower() == "-i" for token in rest)
-    if base in {"curl", "wget", "invoke-webrequest", "invoke-restmethod", "iwr", "irm"}:
-        return any(
-            probe in token
-            for token in lowered
-            for probe in _RECON_HOST_TOKENS
-        )
-    return False
 
 
 def opaque_marker(command_text: str) -> str | None:

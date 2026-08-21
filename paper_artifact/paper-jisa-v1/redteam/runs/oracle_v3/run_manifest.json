@@ -1,0 +1,47 @@
+{
+  "baseline_ablation_recorded": false,
+  "beat_interval_ns": 5000000,
+  "case_count": 20,
+  "case_ids": [
+    "RT01",
+    "RT02",
+    "RT03",
+    "RT04",
+    "RT05",
+    "RT06",
+    "RT07",
+    "RT08",
+    "RT09",
+    "RT10"
+  ],
+  "generated_at": "2026-08-18T08:59:41Z",
+  "oracle_file_opened_during_run": false,
+  "oracle_sha256_commitment": "3b137f19121f761b26b363c6f0f1e2b516975ccdfc640abafce1e972a3938bda",
+  "platform": {
+    "is_windows": true,
+    "machine": "AMD64",
+    "python": "3.13.9",
+    "release": "11",
+    "system": "Windows",
+    "version": "10.0.26200"
+  },
+  "production_dir": "D:\\dev\\sp\\dist\\ProtectUBack_early_access_1.2_local\\project",
+  "production_module_hashes": {
+    "access_equation.py": "sha256:a0463f7f3dd80ac659505f1ca6b151d53b9b0cd4e275372a10094bdb16f6dd01",
+    "access_process_equation.py": "sha256:4e83d85ff218350f013dfc73742b3810ba3574f8c46e184bc04e440814c45735",
+    "access_sampler.py": "sha256:db7cea04768461d3c2ef9c228dd9274ed6670a0d3903bacfec0910b722f3280c",
+    "access_time_grid.py": "sha256:8fd64d80b4907b194f03bcea3941fe49868e8fdd2b5a51f7086928e7ece1a5be",
+    "ot_gate.py": "sha256:6f72238955b7f8f77416b5000c2a2d17256d8662f6d8b264fc8e06d3a8f698f8",
+    "safe_path.py": "sha256:50687cd1a4cf3ed48315379da903050969aa877d205e6996a68c3e26665b2be7",
+    "transition_xray.py": "sha256:a7235a2c0c22d7a9dd5f847b6d96d618b14ca04c027701ccb3240b1addee3e61",
+    "xray_field.py": "sha256:d0622b7d71fdc9dec6bdd138355f094f1815cdcc875fa43a5d8f4129a942dbae",
+    "xray_prison.py": "sha256:13ee1a413fd42fbb9ad9983892a6bd43370a4598deeea1b6d0fbc2d06dd8e03c",
+    "xray_transport.py": "sha256:5997a2b299b32b8c027e35f6238b6190830caf56eb02e0b8b7a44e1a676ec616"
+  },
+  "repeat": 1,
+  "results_file": "results.jsonl",
+  "schema": "pub.redteam.run_manifest.v1",
+  "seed": 20260818,
+  "suite_id": "reeeal-hardcore-production-v1",
+  "variant": "both"
+}

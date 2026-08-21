@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720">
+<rect width="100%" height="100%" fill="white"/>
+<style>text{font-family:Arial,"Microsoft YaHei",sans-serif;fill:#1e252b}.small{font-size:14px}.label{font-size:16px}.title{font-size:25px;font-weight:700}.axis{stroke:#1e252b;stroke-width:2}.grid{stroke:#d9dee2;stroke-width:1}.base{fill:#9ca4aa;stroke:#1e252b;stroke-width:2}.abl{fill:#72a9d6;stroke:#2867a5;stroke-width:2}.pub{fill:#e2676b;stroke:#b52b31;stroke-width:2}.bar{fill:#9ca4aa}.barabl{fill:#2867a5}.barpub{fill:#b52b31}</style>
+<text x="600" y="42" text-anchor="middle" class="title">Baseline and PUB security-utility comparison</text>
+<text x="90" y="78" class="label">A  Security-utility plane</text>
+<rect x="90" y="100" width="580" height="520" fill="none" class="axis"/>
+<line x1="90.0" y1="100" x2="90.0" y2="620" class="grid"/>
+<line x1="90" y1="620.0" x2="670" y2="620.0" class="grid"/>
+<text x="90.0" y="644" text-anchor="middle" class="small">0.0</text>
+<text x="76" y="625.0" text-anchor="end" class="small">0.0</text>
+<line x1="206.0" y1="100" x2="206.0" y2="620" class="grid"/>
+<line x1="90" y1="516.0" x2="670" y2="516.0" class="grid"/>
+<text x="206.0" y="644" text-anchor="middle" class="small">0.2</text>
+<text x="76" y="521.0" text-anchor="end" class="small">0.2</text>
+<line x1="322.0" y1="100" x2="322.0" y2="620" class="grid"/>
+<line x1="90" y1="412.0" x2="670" y2="412.0" class="grid"/>
+<text x="322.0" y="644" text-anchor="middle" class="small">0.4</text>
+<text x="76" y="417.0" text-anchor="end" class="small">0.4</text>
+<line x1="438.0" y1="100" x2="438.0" y2="620" class="grid"/>
+<line x1="90" y1="308.0" x2="670" y2="308.0" class="grid"/>
+<text x="438.0" y="644" text-anchor="middle" class="small">0.6</text>
+<text x="76" y="313.0" text-anchor="end" class="small">0.6</text>
+<line x1="554.0" y1="100" x2="554.0" y2="620" class="grid"/>
+<line x1="90" y1="204.0" x2="670" y2="204.0" class="grid"/>
+<text x="554.0" y="644" text-anchor="middle" class="small">0.8</text>
+<text x="76" y="209.0" text-anchor="end" class="small">0.8</text>
+<line x1="670.0" y1="100" x2="670.0" y2="620" class="grid"/>
+<line x1="90" y1="100.0" x2="670" y2="100.0" class="grid"/>
+<text x="670.0" y="644" text-anchor="middle" class="small">1.0</text>
+<text x="76" y="105.0" text-anchor="end" class="small">1.0</text>
+<rect x="554.0" y="100" width="116.0" height="104.0" fill="#dff1e3"/>
+<text x="615" y="125" text-anchor="middle" class="small">ideal</text>
+<text x="380.0" y="686" text-anchor="middle" class="label">benign completion rate</text>
+<text x="25" y="360.0" transform="rotate(-90 25 360.0)" text-anchor="middle" class="label">attack capture rate</text>
+<text x="735" y="78" class="label">B  Binary F1</text>
+<circle cx="670.0" cy="620.0" r="7" class="base"/>
+<text x="585.0" y="608.0" class="small">Naked</text>
+<text x="850" y="127" text-anchor="end" class="small">Naked</text>
+<rect x="870" y="112" width="0.0" height="22" rx="4" class="bar"/>
+<text x="878.0" y="128" class="small">0.000</text>
+<circle cx="670.0" cy="620.0" r="7" class="base"/>
+<text x="585.0" y="638.0" class="small">Prompt</text>
+<text x="850" y="189" text-anchor="end" class="small">Prompt</text>
+<rect x="870" y="174" width="0.0" height="22" rx="4" class="bar"/>
+<text x="878.0" y="190" class="small">0.000</text>
+<circle cx="90.0" cy="100.0" r="7" class="base"/>
+<text x="105.0" y="138.0" class="small">Keyword</text>
+<text x="850" y="251" text-anchor="end" class="small">Keyword</text>
+<rect x="870" y="236" width="257.1" height="22" rx="4" class="bar"/>
+<text x="1135.1" y="252" class="small">0.667</text>
+<circle cx="206.0" cy="204.0" r="7" class="base"/>
+<text x="220.0" y="196.0" class="small">Content SHA</text>
+<text x="850" y="313" text-anchor="end" class="small">Content SHA</text>
+<rect x="870" y="298" width="237.4" height="22" rx="4" class="bar"/>
+<text x="1115.4" y="314" class="small">0.615</text>
+<circle cx="148.0" cy="152.0" r="7" class="base"/>
+<text x="162.0" y="132.0" class="small">Endpoint</text>
+<text x="850" y="375" text-anchor="end" class="small">Endpoint</text>
+<rect x="870" y="360" width="248.0" height="22" rx="4" class="bar"/>
+<text x="1126.0" y="376" class="small">0.643</text>
+<polygon points="148.0,143.0 139.0,160.0 157.0,160.0" class="abl"/>
+<text x="162.0" y="157.0" class="small">Access-only</text>
+<text x="850" y="437" text-anchor="end" class="small">Access-only</text>
+<rect x="870" y="422" width="248.0" height="22" rx="4" class="barabl"/>
+<text x="1126.0" y="438" class="small">0.643</text>
+<polygon points="90.0,91.0 81.0,108.0 99.0,108.0" class="abl"/>
+<text x="104.0" y="64.0" class="small">Process-only</text>
+<text x="850" y="499" text-anchor="end" class="small">Process-only</text>
+<rect x="870" y="484" width="257.1" height="22" rx="4" class="barabl"/>
+<text x="1135.1" y="500" class="small">0.667</text>
+<path d="M90.0,89.0 L94.0,96.0 L101.0,100.0 L94.0,104.0 L90.0,111.0 L86.0,104.0 L79.0,100.0 L86.0,96.0 Z" class="pub"/>
+<text x="104.0" y="90.0" class="small">Full PUB</text>
+<text x="850" y="561" text-anchor="end" class="small">Full PUB</text>
+<rect x="870" y="546" width="257.1" height="22" rx="4" class="barpub"/>
+<text x="1135.1" y="562" class="small">0.667</text>
+<text x="735" y="630" class="small">n = 10 attack + 10 control; frozen v3 oracle</text>
+</svg>

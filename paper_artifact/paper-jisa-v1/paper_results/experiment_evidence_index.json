@@ -1,0 +1,60 @@
+{
+  "boundaries": {
+    "daily_probe": "79 audit-only cases with human preferred verdicts",
+    "redteam_oracle_v2_rt05fix": "RT05 physical scenario fix with v2 commitment",
+    "redteam_oracle_v3": "v3 oracle lineage comparison; production module hashes unchanged",
+    "redteam_smoke_v1": "initial external-oracle smoke result",
+    "soak": "49,806 desktop soft-preflight and hook records"
+  },
+  "bundle_id": "paper_experiment_evidence_20260818",
+  "schema": "pub.paper_experiment_evidence.v1",
+  "summary": {
+    "daily_exact_matches": 67,
+    "daily_probe_rows": 79,
+    "redteam_scores": {
+      "redteam/runs/oracle_v2_rt05fix": {
+        "attack_capture_rate": 1.0,
+        "false_hold_rate": 1.0,
+        "false_pass_rate": 0.0,
+        "residual_micro": {
+          "f1": 0.8636363636363635,
+          "fn": 5,
+          "fp": 1,
+          "precision": 0.95,
+          "recall": 0.7916666666666666,
+          "tp": 19
+        },
+        "suite_id": "reeeal-hardcore-production-v2"
+      },
+      "redteam/runs/oracle_v3": {
+        "attack_capture_rate": 1.0,
+        "false_hold_rate": 1.0,
+        "false_pass_rate": 0.0,
+        "residual_micro": {
+          "f1": 0.9047619047619048,
+          "fn": 3,
+          "fp": 1,
+          "precision": 0.95,
+          "recall": 0.8636363636363636,
+          "tp": 19
+        },
+        "suite_id": "reeeal-hardcore-production-v3"
+      },
+      "redteam/runs/smoke_v1": {
+        "attack_capture_rate": 1.0,
+        "false_hold_rate": 1.0,
+        "false_pass_rate": 0.0,
+        "residual_micro": {
+          "f1": 0.6486486486486486,
+          "fn": 5,
+          "fp": 8,
+          "precision": 0.6,
+          "recall": 0.7058823529411765,
+          "tp": 12
+        },
+        "suite_id": "reeeal-hardcore-production-v1"
+      }
+    },
+    "soak_rows": 49806
+  }
+}

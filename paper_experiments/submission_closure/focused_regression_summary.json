@@ -1,0 +1,28 @@
+{
+  "schema": "pub.paper.submission_closure.focused_regression.v1",
+  "recorded_date": "2026-08-20",
+  "command": [
+    "python -m pytest",
+    "tests/test_sci_baseline_benchmark.py",
+    "tests/test_xray_transport.py",
+    "tests/test_redteam_hardcore_windows_pub.py",
+    "-q",
+    "-p no:cacheprovider"
+  ],
+  "recorded_result": {
+    "passed": 24,
+    "failed": 0,
+    "elapsed_seconds": 0.79
+  },
+  "source_transcript": {
+    "published": false,
+    "reason": "contains workstation account metadata",
+    "sha256": "07124ba98578101964545b456960432b72892c6795f7a05176a3d2b101406cca"
+  },
+  "test_sources": [
+    "../../paper_artifact/paper-jisa-v1/tests/test_sci_baseline_benchmark.py",
+    "../../paper_artifact/paper-jisa-v1/tests/test_xray_transport.py",
+    "../../paper_artifact/paper-jisa-v1/tests/test_redteam_hardcore_windows_pub.py"
+  ]
+}
+

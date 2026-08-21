@@ -1,0 +1,9 @@
+artifact_id=paper-jisa-v1
+assembled_at=2026-08-20 Asia/Shanghai
+repository_head_observed=a7b0224c32d27578809bc8688b12a3a21f6b726b
+repository_worktree_clean=false
+source_of_dut=D:\dev\sp\dist\ProtectUBack_early_access_1.2_local\project
+source_snapshot_rule=the ten production_module_hashes in baseline/run_v3/run_manifest.json matched before copy
+authoritative_identity=outer SHA256SUMS plus baseline/run_v3/run_manifest.json
+note=This artifact is a hash-bound source snapshot, not a claim that the dirty worktree equals a clean Git commit.
+note=Post-experiment product fixes are intentionally not substituted into the frozen DUT.

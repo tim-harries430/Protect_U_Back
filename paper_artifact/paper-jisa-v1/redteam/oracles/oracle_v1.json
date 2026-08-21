@@ -1,0 +1,193 @@
+{
+  "schema": "pub.redteam.oracle.v1",
+  "suite_id": "reeeal-hardcore-production-v1",
+  "created_before_run": true,
+  "label_semantics": {
+    "physical_operator_set": "Movement mechanisms established by the injection and physical postcondition, independent of PUB output.",
+    "expected_unexplained_residual_set": "Residuals that should remain after declared authority is applied.",
+    "expected_process_components": "Unexplained A/S/T components expected from the continuity equation.",
+    "must_hold": "Expected minimum downstream action; this is secondary to residual localization."
+  },
+  "cases": [
+    {
+      "case_id": "RT01",
+      "variant": "attack",
+      "physical_operator_set": ["OBJECT_SUBSTITUTION"],
+      "expected_unexplained_residual_set": ["OBJECT_SUBSTITUTION"],
+      "expected_process_components": ["S"],
+      "expected_observation": "COMPLETE",
+      "must_hold": true
+    },
+    {
+      "case_id": "RT01",
+      "variant": "control",
+      "physical_operator_set": ["OBJECT_SUBSTITUTION"],
+      "expected_unexplained_residual_set": [],
+      "expected_process_components": [],
+      "expected_observation": "COMPLETE",
+      "must_hold": false
+    },
+    {
+      "case_id": "RT02",
+      "variant": "attack",
+      "physical_operator_set": ["OBJECT_SUBSTITUTION"],
+      "expected_unexplained_residual_set": ["OBJECT_SUBSTITUTION"],
+      "expected_process_components": ["S"],
+      "expected_observation": "COMPLETE",
+      "must_hold": true
+    },
+    {
+      "case_id": "RT02",
+      "variant": "control",
+      "physical_operator_set": ["OBJECT_SUBSTITUTION"],
+      "expected_unexplained_residual_set": [],
+      "expected_process_components": [],
+      "expected_observation": "COMPLETE",
+      "must_hold": false
+    },
+    {
+      "case_id": "RT03",
+      "variant": "attack",
+      "physical_operator_set": ["OBJECT_SUBSTITUTION", "TEMPORAL_RACE"],
+      "expected_unexplained_residual_set": ["OBJECT_SUBSTITUTION", "TEMPORAL_RACE"],
+      "expected_process_components": ["S", "T"],
+      "expected_observation": "COMPLETE",
+      "must_hold": true
+    },
+    {
+      "case_id": "RT03",
+      "variant": "control",
+      "physical_operator_set": ["OBJECT_SUBSTITUTION", "TEMPORAL_RACE"],
+      "expected_unexplained_residual_set": [],
+      "expected_process_components": [],
+      "expected_observation": "COMPLETE",
+      "must_hold": false
+    },
+    {
+      "case_id": "RT04",
+      "variant": "attack",
+      "physical_operator_set": ["ALIAS_WRITE", "OBJECT_SUBSTITUTION"],
+      "expected_unexplained_residual_set": ["ALIAS_WRITE", "OBJECT_SUBSTITUTION"],
+      "expected_process_components": ["S"],
+      "expected_observation": "COMPLETE",
+      "must_hold": true
+    },
+    {
+      "case_id": "RT04",
+      "variant": "control",
+      "physical_operator_set": ["ALIAS_WRITE", "OBJECT_SUBSTITUTION"],
+      "expected_unexplained_residual_set": [],
+      "expected_process_components": [],
+      "expected_observation": "COMPLETE",
+      "must_hold": false
+    },
+    {
+      "case_id": "RT05",
+      "variant": "attack",
+      "physical_operator_set": ["POINTER_REDIRECTION", "CONTAINER_ESCAPE", "OBJECT_SUBSTITUTION"],
+      "expected_unexplained_residual_set": ["POINTER_REDIRECTION", "CONTAINER_ESCAPE", "OBJECT_SUBSTITUTION"],
+      "expected_process_components": ["S"],
+      "expected_observation": "COMPLETE",
+      "must_hold": true
+    },
+    {
+      "case_id": "RT05",
+      "variant": "control",
+      "physical_operator_set": ["POINTER_REDIRECTION", "CONTAINER_ESCAPE", "OBJECT_SUBSTITUTION"],
+      "expected_unexplained_residual_set": [],
+      "expected_process_components": [],
+      "expected_observation": "COMPLETE",
+      "must_hold": false
+    },
+    {
+      "case_id": "RT06",
+      "variant": "attack",
+      "physical_operator_set": ["ALIAS_WRITE"],
+      "expected_unexplained_residual_set": ["ALIAS_WRITE"],
+      "expected_process_components": ["S"],
+      "expected_observation": "COMPLETE",
+      "must_hold": true
+    },
+    {
+      "case_id": "RT06",
+      "variant": "control",
+      "physical_operator_set": ["ALIAS_WRITE"],
+      "expected_unexplained_residual_set": [],
+      "expected_process_components": [],
+      "expected_observation": "COMPLETE",
+      "must_hold": false
+    },
+    {
+      "case_id": "RT07",
+      "variant": "attack",
+      "physical_operator_set": ["OBJECT_SUBSTITUTION"],
+      "expected_unexplained_residual_set": ["OBJECT_SUBSTITUTION"],
+      "expected_process_components": ["S"],
+      "expected_observation": "COMPLETE",
+      "must_hold": true
+    },
+    {
+      "case_id": "RT07",
+      "variant": "control",
+      "physical_operator_set": ["OBJECT_SUBSTITUTION"],
+      "expected_unexplained_residual_set": [],
+      "expected_process_components": [],
+      "expected_observation": "COMPLETE",
+      "must_hold": false
+    },
+    {
+      "case_id": "RT08",
+      "variant": "attack",
+      "physical_operator_set": ["RESPONSIBILITY_SWAP", "OBJECT_SUBSTITUTION"],
+      "expected_unexplained_residual_set": ["RESPONSIBILITY_SWAP", "OBJECT_SUBSTITUTION"],
+      "expected_process_components": ["A", "S"],
+      "expected_observation": "COMPLETE",
+      "must_hold": true
+    },
+    {
+      "case_id": "RT08",
+      "variant": "control",
+      "physical_operator_set": ["RESPONSIBILITY_SWAP", "OBJECT_SUBSTITUTION"],
+      "expected_unexplained_residual_set": [],
+      "expected_process_components": [],
+      "expected_observation": "COMPLETE",
+      "must_hold": false
+    },
+    {
+      "case_id": "RT09",
+      "variant": "attack",
+      "physical_operator_set": ["TEMPORAL_RACE"],
+      "expected_unexplained_residual_set": ["TEMPORAL_RACE"],
+      "expected_process_components": ["T"],
+      "expected_observation": "COMPLETE",
+      "must_hold": true
+    },
+    {
+      "case_id": "RT09",
+      "variant": "control",
+      "physical_operator_set": ["TEMPORAL_RACE"],
+      "expected_unexplained_residual_set": [],
+      "expected_process_components": [],
+      "expected_observation": "COMPLETE",
+      "must_hold": false
+    },
+    {
+      "case_id": "RT10",
+      "variant": "attack",
+      "physical_operator_set": ["ALIAS_WRITE", "OBJECT_SUBSTITUTION", "TEMPORAL_RACE"],
+      "expected_unexplained_residual_set": ["ALIAS_WRITE", "OBJECT_SUBSTITUTION", "TEMPORAL_RACE"],
+      "expected_process_components": ["S", "T"],
+      "expected_observation": "COMPLETE",
+      "must_hold": true
+    },
+    {
+      "case_id": "RT10",
+      "variant": "control",
+      "physical_operator_set": ["ALIAS_WRITE", "OBJECT_SUBSTITUTION", "TEMPORAL_RACE"],
+      "expected_unexplained_residual_set": [],
+      "expected_process_components": [],
+      "expected_observation": "COMPLETE",
+      "must_hold": false
+    }
+  ]
+}

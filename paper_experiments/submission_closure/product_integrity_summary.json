@@ -1,0 +1,27 @@
+{
+  "schema": "pub.paper.submission_closure.product_integrity.v1",
+  "historical_1_2": {
+    "recorded_result": "231/231",
+    "sha256sums_file_sha256": "fab42bec469fe656b5e0218fe85f9b4fa6bb43f33548dfeeb59fe1baa8e6c74d",
+    "note": "The captured unpacked directory later changed four mutable state/log files and is not presented as an untouched reconstruction."
+  },
+  "current_1_3": {
+    "listed_files": 191,
+    "internal_hash_failures": 0,
+    "zip_sha256": "6186cb4f643707aaa99a91607ad0a20b788c72e6d2f6cfe93fbbbed69bb12329",
+    "zip_sidecar_matches": true
+  },
+  "gateway_report": {
+    "sha256": "fc06e8776aa5f78441ff4fda020eed3e507619bfc37cc6b7444cf4951f3ad5aa",
+    "case_count": 7,
+    "expectation_passed": 7,
+    "dispositions": {
+      "PASS": 2,
+      "HOLD": 2,
+      "KILL": 3
+    },
+    "allowed_to_execute": false,
+    "io_executed": false
+  }
+}
+

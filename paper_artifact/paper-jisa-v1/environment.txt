@@ -1,0 +1,13 @@
+artifact_id=paper-jisa-v1
+recorded_baseline_platform.system=Windows
+recorded_baseline_platform.release=11
+recorded_baseline_platform.version=10.0.26200
+recorded_baseline_platform.machine=AMD64
+recorded_baseline_platform.python=3.13.9
+assembly_python=3.13.9
+assembly_pytest=9.1.1
+assembly_pillow=12.0.0
+physical_redteam_requirement=Windows with NTFS-compatible ADS, junction, hardlink, ReplaceFileW and timestamp operations
+score_recomputation_requirement=Python 3.10 or newer; standard library only
+historical_png_source_requirement=Pillow 12.0.0 and Microsoft YaHei fonts
+unsupported_environment_rule=record SKIP_ENVIRONMENT; never convert a skip to PASS or detection

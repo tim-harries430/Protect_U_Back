@@ -1,0 +1,45 @@
+{
+  "actors": {
+    "codex_cli": 238,
+    "codex_desktop_soft": 49568
+  },
+  "authority_leak_true": 0,
+  "can_execute_true": 0,
+  "can_grant_permission_true": 0,
+  "dispositions": {
+    "HOLD": 17568,
+    "KILL": 12811,
+    "PASS": 19237,
+    "QUARANTINE": 190
+  },
+  "phases": {
+    "post": 117,
+    "pre": 121,
+    "soft_preflight": 49568
+  },
+  "reason_codes": {
+    "AGENT_PROPOSAL_PERMISSION_CLAIM": 1007,
+    "CAPABILITY_EXTERNAL_READ_REQUIRES_CONFIRMATION": 223,
+    "CAPABILITY_PATH_DENIED": 3,
+    "CAPABILITY_PROCESS_EQUATION_INCOMPLETE": 204,
+    "CAPABILITY_SIDE_EFFECT_DENIED": 7049,
+    "CHANNEL_WRAP_PROPOSAL": 19237,
+    "COMMAND_SURFACE_OPAQUE_EXECUTION": 3532,
+    "OMEGA_ACCESS_INCOMPLETE_HOLD": 146,
+    "OT_CRITICAL_KILL": 2209,
+    "OT_HOLD_FOR_USER_CONFIRMATION": 1147,
+    "OT_SCOPE_MISMATCH_KILL": 510,
+    "PATH_TARGET_UNRESOLVED": 1508,
+    "PROTECT_AUDIT_SURFACE_MUTATION_DENIED": 756,
+    "PROTECT_PATH_TRAVERSAL_DETECTED": 1,
+    "PROTECT_PERMISSION_SURFACE_MUTATION_DENIED": 754,
+    "PROTECT_SECRET_SURFACE_DENIED": 2017,
+    "UNKNOWN_COMMAND_SURFACE": 534,
+    "XRAY_REVIEW_OBSERVATION_BLINDSPOT": 6573,
+    "XRAY_REVIEW_SENSITIVE_SURFACE": 2206,
+    "XRAY_REVIEW_SUBSTITUTION": 190
+  },
+  "rows": 49806,
+  "schema": "pub.paper.soak_recomputed.v1",
+  "source_sha256": "fa4a3ce2ab0a9514e45df7d4d3c1ef20b0f2fc6ee71c2a79b713e67ee2ab625c"
+}

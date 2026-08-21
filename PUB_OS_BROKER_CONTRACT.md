@@ -1,5 +1,8 @@
 # PUB-OS Broker Contract — the prison-door window
 
+> 本质:broker 是牢门上那扇小窗。它只能「收」与「过」。它没有钥匙(判决权),
+> 没有手(执行权)。让监狱安全的一切,都是这扇窗**拒绝去做**的事。
+
 The broker is the single, dumb, unbypassable aperture between the confined
 workload (**the box** — `pub_os_cage` / `pub_os_runner`) and the outside world
 (**pub-core**: the eyes that decode, the beast that judges, the warden that

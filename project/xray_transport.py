@@ -36,6 +36,9 @@ from xray_prison import XrayPrisonBoundary, XrayPrisonCustody, admit_xray_frame,
 TRANSPORT_ID = "sealed_xray_transport:v0"
 TRANSPORT_AUTHORITY = "observe_seal_attach_only"
 DEFAULT_MAX_BEAT_CELLS = 16_384
+AUTHORIZATION_MATCH_SCHEMA = "xray_authorization_match_v1"
+AUTHORIZATION_MATCH_POLICY = "exact_target_effect_finding"
+AUTHORIZATION_MATCH_POLICY_VERSION = "1"
 
 
 class _XrayBeatMonitor:
@@ -238,6 +241,118 @@ class XrayTransportHandle:
 
 
 @dataclass(frozen=True)
+class AuthorizationFindingWitness:
+    """One observed finding compared with one declared target/effect pair."""
+
+    finding_type: str
+    piece_key: str
+    matched: bool
+    matched_target: str | None = None
+    matched_effect: str | None = None
+    reason: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "finding_type": self.finding_type,
+            "piece_key": self.piece_key,
+            "matched": self.matched,
+            "matched_target": self.matched_target,
+            "matched_effect": self.matched_effect,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
+class AuthorizationMatchWitness:
+    """Hashed testimony explaining which observed deltas match declarations.
+
+    This observes a proposal/finding relationship. It is testimony only and
+    neither grants permission nor executes an operation.
+    """
+
+    declared_targets: Sequence[str] = field(default_factory=tuple)
+    declared_effects: Sequence[str] = field(default_factory=tuple)
+    finding_matches: Sequence[AuthorizationFindingWitness] = field(default_factory=tuple)
+    authorized_delta_digest: str = ""
+    schema: str = AUTHORIZATION_MATCH_SCHEMA
+    match_policy: str = AUTHORIZATION_MATCH_POLICY
+    policy_version: str = AUTHORIZATION_MATCH_POLICY_VERSION
+    testimony_only: bool = True
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "declared_targets", tuple(str(item) for item in self.declared_targets))
+        object.__setattr__(self, "declared_effects", tuple(str(item) for item in self.declared_effects))
+        object.__setattr__(self, "finding_matches", tuple(self.finding_matches))
+
+    @property
+    def matched_findings(self) -> tuple[AuthorizationFindingWitness, ...]:
+        return tuple(item for item in self.finding_matches if item.matched)
+
+    @property
+    def unmatched_findings(self) -> tuple[AuthorizationFindingWitness, ...]:
+        return tuple(item for item in self.finding_matches if not item.matched)
+
+    @property
+    def fully_matched(self) -> bool:
+        return bool(self.finding_matches) and not self.unmatched_findings
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": self.schema,
+            "match_policy": self.match_policy,
+            "policy_version": self.policy_version,
+            "declared_targets": tuple(self.declared_targets),
+            "declared_effects": tuple(self.declared_effects),
+            "finding_matches": tuple(item.to_dict() for item in self.finding_matches),
+            "matched_targets": tuple(
+                sorted({item.matched_target for item in self.matched_findings if item.matched_target})
+            ),
+            "matched_effects": tuple(
+                sorted({item.matched_effect for item in self.matched_findings if item.matched_effect})
+            ),
+            "matched_finding_types": tuple(
+                sorted({item.finding_type for item in self.matched_findings})
+            ),
+            "matched_count": len(self.matched_findings),
+            "unmatched_count": len(self.unmatched_findings),
+            "fully_matched": self.fully_matched,
+            "authorized_delta_digest": self.authorized_delta_digest,
+            "testimony_only": self.testimony_only,
+        }
+
+    def to_evidence(self) -> tuple[str, ...]:
+        summary = (
+            f"xray_authorization.schema:{self.schema}",
+            f"xray_authorization.match_policy:{self.match_policy}",
+            f"xray_authorization.policy_version:{self.policy_version}",
+            f"xray_authorization.matched_count:{len(self.matched_findings)}",
+            f"xray_authorization.unmatched_count:{len(self.unmatched_findings)}",
+            f"xray_authorization.fully_matched:{str(self.fully_matched).lower()}",
+            f"xray_authorization.authorized_delta_digest:{self.authorized_delta_digest}",
+            f"xray_authorization.testimony_only:{str(self.testimony_only).lower()}",
+        )
+        matched_dimensions = (
+            *(f"xray_authorization.matched_target:{target}" for target in sorted(
+                {item.matched_target for item in self.matched_findings if item.matched_target}
+            )),
+            *(f"xray_authorization.matched_effect:{effect}" for effect in sorted(
+                {item.matched_effect for item in self.matched_findings if item.matched_effect}
+            )),
+            *(f"xray_authorization.matched_finding_type:{finding_type}" for finding_type in sorted(
+                {item.finding_type for item in self.matched_findings}
+            )),
+        )
+        finding_evidence = tuple(
+            "xray_authorization.finding:"
+            f"{'matched' if item.matched else 'unmatched'}:"
+            f"{item.finding_type}:{item.piece_key}:"
+            f"{item.matched_target or '-'}:{item.matched_effect or '-'}:{item.reason}"
+            for item in self.finding_matches
+        )
+        return summary + matched_dimensions + finding_evidence
+
+
+@dataclass(frozen=True)
 class XrayTransportSeal:
     proposal_id: str
     custody: XrayPrisonCustody
@@ -245,17 +360,13 @@ class XrayTransportSeal:
     transition_evidence: Sequence[str] = field(default_factory=tuple)
     access_witness: Mapping[str, Any] = field(default_factory=dict)
     process_witness: Mapping[str, Any] = field(default_factory=dict)
+    authorization_match: AuthorizationMatchWitness = field(
+        default_factory=AuthorizationMatchWitness
+    )
     transport_id: str = TRANSPORT_ID
     authority: str = TRANSPORT_AUTHORITY
     sealed: bool = True
     testimony_only: bool = True
-    # True iff every mutation finding is exactly what the proposal DECLARED it would
-    # do (a write/delete changing its declared targets = the job, not a substitution).
-    # Read by xray_review.seal_disguise to stop a benign write from quarantining
-    # itself. Deliberately NOT serialised into to_dict/to_evidence, so transport_hash
-    # is unchanged. Default False = conservative (treat as before) when uncomputed.
-    expected_mutation: bool = False
-
     def __post_init__(self):
         object.__setattr__(
             self,
@@ -264,6 +375,12 @@ class XrayTransportSeal:
         )
         object.__setattr__(self, "access_witness", dict(self.access_witness))
         object.__setattr__(self, "process_witness", dict(self.process_witness))
+
+    @property
+    def expected_mutation(self) -> bool:
+        """Compatibility view; the hashed structured witness is authoritative."""
+
+        return self.authorization_match.fully_matched
 
     @property
     def boundary_hash(self) -> str:
@@ -316,6 +433,7 @@ class XrayTransportSeal:
             "field": self.field.to_dict(),
             "access_witness": dict(self.access_witness),
             "process_witness": dict(self.process_witness),
+            "authorization_match": self.authorization_match.to_dict(),
             "evidence": self.to_evidence(include_hash=False),
         }
         if include_hash:
@@ -339,6 +457,7 @@ class XrayTransportSeal:
         return (
             evidence
             + tuple(self.transition_evidence)
+            + self.authorization_match.to_evidence()
             + transition_access_witness_evidence(self.access_witness)
             + transition_process_witness_evidence(self.process_witness)
             + tuple(self.custody.to_evidence())
@@ -377,31 +496,124 @@ def open_xray_transport(
     )
 
 
-# A mutating effect (write/delete) DECLARED by the proposal vouches for the
-# transition's content findings: the targets changing IS the job. A delete shows up
-# as HASH_MUTATED (the hash goes to a missing sentinel), not a distinct DELETED
-# finding, so we do NOT match finding type to effect -- declaring ANY mutating effect
-# is enough. ACTION_ID_MISMATCH (a torn observation window) is never vouched. A
-# declared-READ op that mutated has no mutating effect -> unexpected -> the seal still
-# quarantines. Identity swaps (pointer/alias/container-escape) ride a SEPARATE review
-# axis (single_frame_disguise on the enter frame), unaffected by this.
-_MUTATING_EFFECTS = frozenset({"write", "delete"})
+def _authorization_match_witness(
+    pair: Any,
+    proposal: CommandProposal,
+) -> AuthorizationMatchWitness:
+    """Compare every observed finding with an exact declared target/effect."""
 
-
-def _mutation_is_declared(pair: Any, proposal: CommandProposal) -> bool:
-    findings = tuple(getattr(pair, "findings", ()) or ())
-    if not findings:
-        return False
-    if any(
-        str(getattr(finding, "finding_type", "")) == "ACTION_ID_MISMATCH"
-        for finding in findings
-    ):
-        return False
-    declared = {
-        str(getattr(effect, "value", effect)).lower()
-        for effect in getattr(proposal, "expected_side_effects", ()) or ()
+    declared_targets = tuple(dict.fromkeys(str(target) for target in proposal.target_paths))
+    declared_effects = tuple(
+        sorted(
+            str(getattr(effect, "value", effect)).lower()
+            for effect in proposal.expected_side_effects
+        )
+    )
+    target_by_piece_key = {
+        f"target_path:{target}": target for target in declared_targets
     }
-    return bool(declared & _MUTATING_EFFECTS)
+    enter_by_key = {piece.key: piece for piece in getattr(pair.enter, "pieces", ())}
+    exit_by_key = {piece.key: piece for piece in getattr(pair.exit, "pieces", ())}
+    matches: list[AuthorizationFindingWitness] = []
+
+    for finding in tuple(getattr(pair, "findings", ()) or ()):
+        finding_type = str(getattr(finding, "finding_type", ""))
+        piece_key = str(getattr(finding, "piece_key", ""))
+        target = target_by_piece_key.get(piece_key)
+        effect = _finding_effect(finding)
+        reason = "exact_target_effect_finding_match"
+        matched = True
+        if target is None:
+            matched = False
+            reason = "finding_target_not_declared"
+        elif effect is None:
+            matched = False
+            reason = "finding_type_or_state_not_authorizable"
+        elif effect not in declared_effects:
+            matched = False
+            reason = "finding_effect_not_declared"
+        else:
+            identity_reason = _identity_movement_reason(
+                enter_by_key.get(piece_key),
+                exit_by_key.get(piece_key),
+                finding_type=finding_type,
+            )
+            if identity_reason:
+                matched = False
+                reason = identity_reason
+        matches.append(
+            AuthorizationFindingWitness(
+                finding_type=finding_type,
+                piece_key=piece_key,
+                matched=matched,
+                matched_target=target if matched else None,
+                matched_effect=effect if matched else None,
+                reason=reason,
+            )
+        )
+
+    digest_payload = {
+        "schema": AUTHORIZATION_MATCH_SCHEMA,
+        "match_policy": AUTHORIZATION_MATCH_POLICY,
+        "policy_version": AUTHORIZATION_MATCH_POLICY_VERSION,
+        "proposal_id": proposal.proposal_id,
+        "declared_targets": declared_targets,
+        "declared_effects": declared_effects,
+        "finding_matches": tuple(item.to_dict() for item in matches),
+    }
+    return AuthorizationMatchWitness(
+        declared_targets=declared_targets,
+        declared_effects=declared_effects,
+        finding_matches=tuple(matches),
+        authorized_delta_digest=_sha256_canonical(digest_payload),
+    )
+
+
+def _finding_effect(finding: Any) -> str | None:
+    finding_type = str(getattr(finding, "finding_type", ""))
+    if finding_type == "CREATED_DURING_WINDOW":
+        return "write"
+    if finding_type == "DELETED_DURING_WINDOW":
+        return "delete"
+    if finding_type != "HASH_MUTATED":
+        return None
+    details = getattr(finding, "details", {}) or {}
+    before_tags = set(details.get("before_tags") or ())
+    after_tags = set(details.get("after_tags") or ())
+    before_missing = "missing" in before_tags
+    after_missing = "missing" in after_tags
+    if before_missing and not after_missing:
+        return "write"
+    if not before_missing and after_missing:
+        return "delete"
+    if not before_missing and not after_missing:
+        return "write"
+    return None
+
+
+def _identity_movement_reason(
+    before: Any,
+    after: Any,
+    *,
+    finding_type: str,
+) -> str | None:
+    """Keep pointer/alias/object identity changes outside content authorization."""
+
+    if finding_type != "HASH_MUTATED" or before is None or after is None:
+        return None
+    if getattr(before, "exists", None) is not getattr(after, "exists", None):
+        return None
+    before_details = getattr(before, "details", {}) or {}
+    after_details = getattr(after, "details", {}) or {}
+    if getattr(before, "type", None) != getattr(after, "type", None):
+        return "resource_type_movement_not_authorized"
+    for key in ("file_id", "resolved_path", "symlink_target", "nlink"):
+        if before_details.get(key) != after_details.get(key):
+            return f"resource_identity_{key}_movement_not_authorized"
+    for key in ("archive_escape_entries", "ads_streams"):
+        if before_details.get(key) != after_details.get(key):
+            return f"resource_surface_{key}_movement_not_authorized"
+    return None
 
 
 def close_xray_transport(
@@ -436,7 +648,7 @@ def close_xray_transport(
         transition_evidence=pair.to_evidence(),
         access_witness=access_witness,
         process_witness=process_witness,
-        expected_mutation=_mutation_is_declared(pair, proposal),
+        authorization_match=_authorization_match_witness(pair, proposal),
     )
 
 

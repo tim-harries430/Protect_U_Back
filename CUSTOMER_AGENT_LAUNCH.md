@@ -3,7 +3,7 @@
 After unpacking the release, the customer only needs to set two variables:
 
 ```bash
-PUB=/path/to/ProtectUBack_early_access_1.2_local   # unpacked PUB release
+PUB=/path/to/ProtectUBack_early_access_1.3_local   # unpacked PUB release
 WORK=/path/to/your/project                         # project to supervise; must be outside PUB
 ```
 

@@ -5,9 +5,11 @@
     "ProtectUBack.ps1",
     "project/protect_launcher.py"
   ],
+  "feature_reachability": "FEATURE_REACHABILITY.json",
   "files": [
     "CUSTOMER_AGENT_LAUNCH.md",
     "EVIDENCE.md",
+    "FEATURE_REACHABILITY.json",
     "KINGDOM_MAP.md",
     "LIVE_EVIDENCE_SUMMARY.md",
     "LOCAL_ONLY.txt",
@@ -23,6 +25,8 @@
     "SHA256SUMS.txt",
     "evidence/README.txt",
     "evidence/allow_install_file_report.json",
+    "evidence/benign_probe_v1.err",
+    "evidence/benign_probe_v1.json",
     "evidence/cases_dir.txt",
     "evidence/cases_sha256.txt",
     "evidence/codex_gate_proof_2026-06-13.json",
@@ -146,6 +150,7 @@
     "project/tests/test_decoder_grounding.py",
     "project/tests/test_decoder_grounding_oracle.py",
     "project/tests/test_failclosed_witness.py",
+    "project/tests/test_feature_reachability.py",
     "project/tests/test_opaque_blindspot.py",
     "project/tests/test_parallel_audit.py",
     "project/tests/test_pub_agent_launcher.py",
@@ -198,5 +203,5 @@
   "no_network": true,
   "no_telemetry": true,
   "offline": true,
-  "release_name": "ProtectUBack_early_access_1.2_local"
+  "release_name": "ProtectUBack_early_access_1.3_local"
 }

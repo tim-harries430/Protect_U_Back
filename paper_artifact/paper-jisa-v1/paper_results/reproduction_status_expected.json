@@ -1,0 +1,331 @@
+{
+  "all_expected_results_match": true,
+  "baseline": {
+    "detectors": {
+      "content_sha256_endpoint": {
+        "attack_capture_rate": 0.8,
+        "balanced_accuracy": 0.5,
+        "benign_completion_rate": 0.2,
+        "description": "One before/after existence and content-SHA comparison.",
+        "evaluated": 20,
+        "f1": 0.6153846153846154,
+        "false_hold_rate": 0.8,
+        "false_pass_rate": 0.2,
+        "fn": 2,
+        "fp": 8,
+        "kind": "external_baseline",
+        "precision": 0.5,
+        "recall": 0.8,
+        "specificity": 0.2,
+        "tn": 2,
+        "tp": 8
+      },
+      "full_pub_reference": {
+        "attack_capture_rate": 1.0,
+        "balanced_accuracy": 0.5,
+        "benign_completion_rate": 0.0,
+        "description": "Recorded full PUB X-ray testimony; reference, not a baseline.",
+        "evaluated": 20,
+        "f1": 0.6666666666666666,
+        "false_hold_rate": 1.0,
+        "false_pass_rate": 0.0,
+        "fn": 0,
+        "fp": 10,
+        "kind": "reference",
+        "precision": 0.5,
+        "recall": 1.0,
+        "specificity": 0.0,
+        "tn": 0,
+        "tp": 10
+      },
+      "keyword_guardrail": {
+        "attack_capture_rate": 1.0,
+        "balanced_accuracy": 0.5,
+        "benign_completion_rate": 0.0,
+        "description": "Visible command/scope/effect/target keyword scan.",
+        "evaluated": 20,
+        "f1": 0.6666666666666666,
+        "false_hold_rate": 1.0,
+        "false_pass_rate": 0.0,
+        "fn": 0,
+        "fp": 10,
+        "kind": "external_baseline",
+        "precision": 0.5,
+        "recall": 1.0,
+        "specificity": 0.0,
+        "tn": 0,
+        "tp": 10
+      },
+      "legacy_endpoint": {
+        "attack_capture_rate": 0.9,
+        "balanced_accuracy": 0.5,
+        "benign_completion_rate": 0.1,
+        "description": "One before/after endpoint snapshot; no meter, authority, or A/S/T.",
+        "evaluated": 20,
+        "f1": 0.6428571428571429,
+        "false_hold_rate": 0.9,
+        "false_pass_rate": 0.1,
+        "fn": 1,
+        "fp": 9,
+        "kind": "external_baseline",
+        "precision": 0.5,
+        "recall": 0.9,
+        "specificity": 0.1,
+        "tn": 1,
+        "tp": 9
+      },
+      "naked_agent": {
+        "attack_capture_rate": 0.0,
+        "balanced_accuracy": 0.5,
+        "benign_completion_rate": 1.0,
+        "description": "No audit boundary; every proposal proceeds.",
+        "evaluated": 20,
+        "f1": 0.0,
+        "false_hold_rate": 0.0,
+        "false_pass_rate": 1.0,
+        "fn": 10,
+        "fp": 0,
+        "kind": "external_baseline",
+        "precision": 0.0,
+        "recall": 0.0,
+        "specificity": 1.0,
+        "tn": 10,
+        "tp": 0
+      },
+      "prompt_guardrail": {
+        "attack_capture_rate": 0.0,
+        "balanced_accuracy": 0.5,
+        "benign_completion_rate": 1.0,
+        "description": "Visible command-text token scan only.",
+        "evaluated": 20,
+        "f1": 0.0,
+        "false_hold_rate": 0.0,
+        "false_pass_rate": 1.0,
+        "fn": 10,
+        "fp": 0,
+        "kind": "external_baseline",
+        "precision": 0.0,
+        "recall": 0.0,
+        "specificity": 1.0,
+        "tn": 10,
+        "tp": 0
+      },
+      "xray_access_only": {
+        "attack_capture_rate": 0.9,
+        "balanced_accuracy": 0.5,
+        "benign_completion_rate": 0.1,
+        "description": "PUB access witness only; process witness removed.",
+        "evaluated": 20,
+        "f1": 0.6428571428571429,
+        "false_hold_rate": 0.9,
+        "false_pass_rate": 0.1,
+        "fn": 1,
+        "fp": 9,
+        "kind": "ablation",
+        "precision": 0.5,
+        "recall": 0.9,
+        "specificity": 0.1,
+        "tn": 1,
+        "tp": 9
+      },
+      "xray_process_only": {
+        "attack_capture_rate": 1.0,
+        "balanced_accuracy": 0.5,
+        "benign_completion_rate": 0.0,
+        "description": "PUB P=A+S-T process witness only; access witness removed.",
+        "evaluated": 20,
+        "f1": 0.6666666666666666,
+        "false_hold_rate": 1.0,
+        "false_pass_rate": 0.0,
+        "fn": 0,
+        "fp": 10,
+        "kind": "ablation",
+        "precision": 0.5,
+        "recall": 1.0,
+        "specificity": 0.0,
+        "tn": 0,
+        "tp": 10
+      }
+    },
+    "expected_sha256": "d86ba3e3ddc2c82001bdd8ebe5f24a9004a504a37ab1ea927167c0da15f84e98",
+    "recomputed_sha256": "d86ba3e3ddc2c82001bdd8ebe5f24a9004a504a37ab1ea927167c0da15f84e98",
+    "semantic_match": true
+  },
+  "daily": {
+    "categories": {
+      "agent_control_surface": {
+        "KILL": 2
+      },
+      "artifact_unpack": {
+        "HOLD": 2
+      },
+      "customer_data": {
+        "HOLD": 1,
+        "PASS": 1
+      },
+      "danger_control": {
+        "HOLD": 1,
+        "KILL": 4
+      },
+      "dataset_build": {
+        "HOLD": 3,
+        "KILL": 1,
+        "PASS": 1
+      },
+      "decoder_dense": {
+        "HOLD": 2,
+        "KILL": 1
+      },
+      "dependency_management": {
+        "HOLD": 3,
+        "PASS": 2
+      },
+      "eval_benchmark": {
+        "HOLD": 3,
+        "KILL": 2,
+        "PASS": 1
+      },
+      "frontend_ui": {
+        "HOLD": 4,
+        "PASS": 1
+      },
+      "git_workflow": {
+        "HOLD": 2,
+        "KILL": 2,
+        "PASS": 2
+      },
+      "notebook_analysis": {
+        "HOLD": 3,
+        "PASS": 2
+      },
+      "paper_research": {
+        "HOLD": 1,
+        "KILL": 1
+      },
+      "presentation": {
+        "HOLD": 2
+      },
+      "prompt_policy": {
+        "HOLD": 3,
+        "PASS": 1
+      },
+      "reporting": {
+        "HOLD": 1,
+        "KILL": 2,
+        "PASS": 1
+      },
+      "secrets": {
+        "KILL": 4
+      },
+      "security_redteam": {
+        "HOLD": 1,
+        "KILL": 1,
+        "PASS": 1
+      },
+      "sre_ops": {
+        "HOLD": 4,
+        "KILL": 4,
+        "PASS": 1
+      },
+      "vibe_coding": {
+        "HOLD": 3,
+        "PASS": 2
+      }
+    },
+    "classifications": {
+      "FRICTION": 4,
+      "HARD_BLOCK": 8,
+      "OK": 67
+    },
+    "dispositions": {
+      "HOLD": 39,
+      "KILL": 24,
+      "PASS": 16
+    },
+    "exact_matches": 67,
+    "preferred_dispositions": {
+      "HOLD": 44,
+      "KILL": 15,
+      "PASS": 20
+    },
+    "rows": 79,
+    "schema": "pub.paper.daily_recomputed.v1",
+    "semantic_match": true,
+    "source_sha256": "5af9b31b5dc58ea42b9f94e19167f381b5736728ad1f1f6aabfe87b2da4ed0a7"
+  },
+  "figure11": {
+    "byte_match": true,
+    "expected_sha256": "95b27a5836611dc42ac3d894f8c6ea5fe3ef743439092c4c7cdd46adf53aaa03",
+    "recomputed_sha256": "95b27a5836611dc42ac3d894f8c6ea5fe3ef743439092c4c7cdd46adf53aaa03"
+  },
+  "redteam": {
+    "oracle_v2_rt05fix": {
+      "expected_sha256": "5fd5ac70f61012fd7163048ffde1d01c76bad9cf63c60869725542dfa9b7cc04",
+      "recomputed_sha256": "5fd5ac70f61012fd7163048ffde1d01c76bad9cf63c60869725542dfa9b7cc04",
+      "returncode": 0,
+      "semantic_match": true,
+      "stderr": ""
+    },
+    "oracle_v3": {
+      "expected_sha256": "54015f4ac2b034ccdbba8d9404223f4560e8c93fe6beaa67fb8249760d99c725",
+      "recomputed_sha256": "54015f4ac2b034ccdbba8d9404223f4560e8c93fe6beaa67fb8249760d99c725",
+      "returncode": 0,
+      "semantic_match": true,
+      "stderr": ""
+    },
+    "smoke_v1": {
+      "expected_sha256": "ee11ceb5be1706c80fd5614d924ac8dbadd675cbdf8597881a41d848c5dc7f8a",
+      "recomputed_sha256": "ee11ceb5be1706c80fd5614d924ac8dbadd675cbdf8597881a41d848c5dc7f8a",
+      "returncode": 0,
+      "semantic_match": true,
+      "stderr": ""
+    }
+  },
+  "schema": "pub.paper.reproduction_status.v1",
+  "soak": {
+    "actors": {
+      "codex_cli": 238,
+      "codex_desktop_soft": 49568
+    },
+    "authority_leak_true": 0,
+    "can_execute_true": 0,
+    "can_grant_permission_true": 0,
+    "dispositions": {
+      "HOLD": 17568,
+      "KILL": 12811,
+      "PASS": 19237,
+      "QUARANTINE": 190
+    },
+    "phases": {
+      "post": 117,
+      "pre": 121,
+      "soft_preflight": 49568
+    },
+    "reason_codes": {
+      "AGENT_PROPOSAL_PERMISSION_CLAIM": 1007,
+      "CAPABILITY_EXTERNAL_READ_REQUIRES_CONFIRMATION": 223,
+      "CAPABILITY_PATH_DENIED": 3,
+      "CAPABILITY_PROCESS_EQUATION_INCOMPLETE": 204,
+      "CAPABILITY_SIDE_EFFECT_DENIED": 7049,
+      "CHANNEL_WRAP_PROPOSAL": 19237,
+      "COMMAND_SURFACE_OPAQUE_EXECUTION": 3532,
+      "OMEGA_ACCESS_INCOMPLETE_HOLD": 146,
+      "OT_CRITICAL_KILL": 2209,
+      "OT_HOLD_FOR_USER_CONFIRMATION": 1147,
+      "OT_SCOPE_MISMATCH_KILL": 510,
+      "PATH_TARGET_UNRESOLVED": 1508,
+      "PROTECT_AUDIT_SURFACE_MUTATION_DENIED": 756,
+      "PROTECT_PATH_TRAVERSAL_DETECTED": 1,
+      "PROTECT_PERMISSION_SURFACE_MUTATION_DENIED": 754,
+      "PROTECT_SECRET_SURFACE_DENIED": 2017,
+      "UNKNOWN_COMMAND_SURFACE": 534,
+      "XRAY_REVIEW_OBSERVATION_BLINDSPOT": 6573,
+      "XRAY_REVIEW_SENSITIVE_SURFACE": 2206,
+      "XRAY_REVIEW_SUBSTITUTION": 190
+    },
+    "rows": 49806,
+    "schema": "pub.paper.soak_recomputed.v1",
+    "semantic_match": true,
+    "source_sha256": "fa4a3ce2ab0a9514e45df7d4d3c1ef20b0f2fc6ee71c2a79b713e67ee2ab625c"
+  }
+}

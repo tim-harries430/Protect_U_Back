@@ -10,6 +10,19 @@ PUB is not a prompt filter. It does not try to decide whether language sounds sa
 Channel -> Envelope -> X-ray -> Admission -> Tool -> Autopsy -> OT
 ```
 
+## Current release and paper evidence
+
+- Latest offline package: [`ProtectUBack_early_access_1.3_local.zip`](releases/ProtectUBack_early_access_1.3_local.zip)
+- ZIP SHA-256: `6186cb4f643707aaa99a91607ad0a20b788c72e6d2f6cfe93fbbbed69bb12329`
+- Feature wiring levels: [`FEATURE_REACHABILITY.json`](FEATURE_REACHABILITY.json)
+- Paper experiment map: [`PAPER_EXPERIMENTS.md`](PAPER_EXPERIMENTS.md)
+- Frozen reproducibility package: [`paper_artifact/paper-jisa-v1`](paper_artifact/paper-jisa-v1/)
+
+The paper artifact includes the complete red-team, daily-probe, 49,806-row
+soak, baseline/ablation, scoring and figure-reproduction materials. Product
+1.3 is published separately so later fixes are not substituted into the frozen
+paper results.
+
 ## What It Does
 
 PUB sits between an agent/tool runner and real side effects.
@@ -168,7 +181,7 @@ environment blocked    -> replay/host capability issue
 From a local release package:
 
 ```powershell
-cd ProtectUBack_early_access_1.2_local
+cd ProtectUBack_early_access_1.3_local
 python project\protect_launcher.py audit test\sandbox_gateway_cases.json
 ```
 

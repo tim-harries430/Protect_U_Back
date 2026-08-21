@@ -1,0 +1,71 @@
+{
+  "schema": "pub.feature_reachability.v1",
+  "release": "ProtectUBack_early_access_1.3_local",
+  "level_model": [
+    "DEFINED",
+    "IMPORTED",
+    "REACHABLE",
+    "OUTCOME_AFFECTING",
+    "RUNTIME_PROVEN"
+  ],
+  "features": [
+    {
+      "feature_id": "u_xray_scalar_potential:v0",
+      "display_name": "X-ray scalar potential field",
+      "repository_source_files": [
+        "xray_field.py",
+        "xray_transport.py",
+        "xray_review.py",
+        "parallel_audit.py"
+      ],
+      "release_source_files": [
+        "project/xray_field.py",
+        "project/xray_transport.py",
+        "project/xray_review.py",
+        "project/parallel_audit.py"
+      ],
+      "entrypoints": [
+        "project/claude_code_hooks.py:run_pretool_admission",
+        "project/codex_bash_guard.py:audit_shell_argv",
+        "project/protect_u_back.py:main"
+      ],
+      "call_chain": [
+        "audit_with_xray_review",
+        "run_parallel_audit",
+        "close_xray_transport",
+        "sample_xray_potential_pair"
+      ],
+      "output_consumers": [
+        "XrayTransportSeal.field",
+        "seal_disguise",
+        "escalate_decision"
+      ],
+      "verdict_effect": "DISTORTED or UNKNOWN field testimony may tighten a lower-ranked result to HOLD; field testimony cannot relax a stricter result",
+      "real_io_window": {
+        "protect_cli": "formal dry-run entrypoint; no I/O execution",
+        "in_process_parallel_audit": "enter/exit transport with bounded beat sampling",
+        "outer_claude_hook": "endpoint-only because PreToolUse and PostToolUse are separate processes"
+      },
+      "level_evidence": {
+        "DEFINED": true,
+        "IMPORTED": true,
+        "REACHABLE": true,
+        "OUTCOME_AFFECTING": true,
+        "RUNTIME_PROVEN": false
+      },
+      "current_level": "OUTCOME_AFFECTING",
+      "status": "ACTIVE_PARTIAL",
+      "runtime_proven_scope": "not claimed; formal CLI dry-run reachability and causal verdict effect are tested, while the outer Claude hook remains endpoint-only",
+      "tests": [
+        "project/tests/test_feature_reachability.py::test_xray_scalar_field_is_reachable_from_protect_cli",
+        "project/tests/test_feature_reachability.py::test_xray_scalar_field_output_changes_protect_cli_outcome"
+      ],
+      "authority_boundary": {
+        "testimony_only": true,
+        "can_execute": false,
+        "can_grant_permission": false,
+        "io_executed": false
+      }
+    }
+  ]
+}

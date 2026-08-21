@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from os.path import normcase, normpath
@@ -204,6 +205,7 @@ NETWORK_TOKENS = (
     "post ",
     " -x post",
 )
+COMMAND_ALIAS_TOKENS = frozenset({"iwr", "irm"})
 BROWSER_TOKENS = (
     "chrome\\user data",
     "chrome/user data",
@@ -1310,11 +1312,18 @@ def _first_present(*values: Any, default: Any = None) -> Any:
 
 
 def _contains_any(text: str, tokens: Iterable[str]) -> bool:
-    return any(token.lower() in text for token in tokens if token)
+    return any(_token_present(text, token) for token in tokens if token)
 
 
 def _token_evidence(text: str, tokens: Iterable[str]) -> Sequence[str]:
-    return tuple(token for token in tokens if token.lower() in text)
+    return tuple(token for token in tokens if _token_present(text, token))
+
+
+def _token_present(text: str, token: str) -> bool:
+    lowered = token.lower()
+    if lowered in COMMAND_ALIAS_TOKENS:
+        return re.search(rf"(?<![a-z0-9_]){re.escape(lowered)}(?![a-z0-9_])", text) is not None
+    return lowered in text
 
 
 def _secret_evidence(text: str) -> Sequence[str]:
